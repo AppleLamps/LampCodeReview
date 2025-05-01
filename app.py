@@ -41,7 +41,7 @@ Get expert-level insights to improve your codebase with prioritized, actionable 
 env_api_key = os.getenv("OPENROUTER_API_KEY")
 if env_api_key:
     api_key = env_api_key
-    st.info("Loaded OpenRouter API key from .env file.")
+    st.info("API costs covered by @lamps_apple on 𝕏.")
 else:
     api_key = st.text_input("Enter your OpenRouter API Key", type="password")
 
@@ -58,10 +58,14 @@ else:
     - For large projects, focus on specific modules or components at a time
     """)
 
+    import zipfile
+    import io
+
+    # Accept code files or a zip archive
     uploaded_files = st.file_uploader(
-        "Select code files to analyze (.py, .js, .java, .ts, .go, .rb, .php, .cs, etc.)",
+        "Select code files or a .zip archive to analyze",
         accept_multiple_files=True,
-        type=["py", "js", "java", "ts", "go", "rb", "php", "cs", "c", "cpp", "h", "hpp", "html", "css", "sql", "yaml", "yml", "json", "xml", "md", "sh", "bat", "ps1"]
+        type=["py", "js", "java", "ts", "go", "rb", "php", "cs", "c", "cpp", "h", "hpp", "html", "htm", "css", "sql", "yaml", "yml", "json", "xml", "md", "sh", "bat", "ps1", "zip"]
     )
 
     # Analysis button with improved styling
@@ -97,41 +101,80 @@ else:
             MAX_CONTENT_SIZE = 50 * 1024 * 1024  # 50 MB total
             MAX_FILE_SIZE = 50 * 1024 * 1024     # 50 MB per individual file
 
+            # Supported file extensions
+            SUPPORTED_EXTS = (".py", ".js", ".java", ".ts", ".go", ".rb", ".php", ".cs", ".c", ".cpp", ".h", ".hpp", ".html", ".htm", ".css", ".sql", ".yaml", ".yml", ".json", ".xml", ".md", ".sh", ".bat", ".ps1")
+
+            def is_supported_file(filename):
+                return filename.lower().endswith(SUPPORTED_EXTS)
+
             for uploaded_file in uploaded_files:
-                try:
-                    # To read file as string:
-                    file_content = uploaded_file.getvalue().decode("utf-8")
-                    file_size = len(file_content)
-
-                    # Check if this file would exceed our total size limit
-                    if total_content_size + file_size > MAX_CONTENT_SIZE:
-                        st.warning(f"⚠️ File '{uploaded_file.name}' skipped due to total content size limits. Try analyzing fewer files at once.")
+                if uploaded_file.name.lower().endswith('.zip'):
+                    try:
+                        with zipfile.ZipFile(io.BytesIO(uploaded_file.read())) as z:
+                            for zip_info in z.infolist():
+                                if zip_info.is_dir():
+                                    continue
+                                if is_supported_file(zip_info.filename):
+                                    try:
+                                        file_content = z.read(zip_info.filename).decode("utf-8", errors="replace")
+                                        file_size = len(file_content)
+                                        if total_content_size + file_size > MAX_CONTENT_SIZE:
+                                            st.warning(f"⚠️ File '{zip_info.filename}' skipped due to total content size limits. Try analyzing fewer files at once.")
+                                            continue
+                                        if file_size > MAX_FILE_SIZE:
+                                            truncated_content = file_content[:MAX_FILE_SIZE]
+                                            truncated_content += f"\n\n... [Content truncated - file is {file_size} bytes, showing first {MAX_FILE_SIZE} bytes] ...\n"
+                                            code_contents.append({
+                                                "filename": f"{zip_info.filename} (truncated)",
+                                                "content": truncated_content
+                                            })
+                                            st.info(f"📄 File '{zip_info.filename}' was truncated for analysis as it exceeds size limits. Only the first portion will be analyzed.")
+                                            total_content_size += len(truncated_content)
+                                        else:
+                                            code_contents.append({
+                                                "filename": zip_info.filename,
+                                                "content": file_content
+                                            })
+                                            total_content_size += file_size
+                                    except Exception as file_error:
+                                        st.error(f"⚠️ Error processing file '{zip_info.filename}' in zip: {str(file_error)}")
+                                        continue
+                    except Exception as zip_error:
+                        st.error(f"⚠️ Error reading zip file '{uploaded_file.name}': {str(zip_error)}")
                         continue
+                else:
+                    try:
+                        # To read file as string:
+                        file_content = uploaded_file.getvalue().decode("utf-8")
+                        file_size = len(file_content)
 
-                    # Handle large files by truncating with a note
-                    if file_size > MAX_FILE_SIZE:
-                        # Truncate the file content
-                        truncated_content = file_content[:MAX_FILE_SIZE]
-                        truncated_content += f"\n\n... [Content truncated - file is {file_size} bytes, showing first {MAX_FILE_SIZE} bytes] ...\n"
+                        # Check if this file would exceed our total size limit
+                        if total_content_size + file_size > MAX_CONTENT_SIZE:
+                            st.warning(f"⚠️ File '{uploaded_file.name}' skipped due to total content size limits. Try analyzing fewer files at once.")
+                            continue
 
-                        code_contents.append({
-                            "filename": f"{uploaded_file.name} (truncated)",
-                            "content": truncated_content
-                        })
+                        # Handle large files by truncating with a note
+                        if file_size > MAX_FILE_SIZE:
+                            truncated_content = file_content[:MAX_FILE_SIZE]
+                            truncated_content += f"\n\n... [Content truncated - file is {file_size} bytes, showing first {MAX_FILE_SIZE} bytes] ...\n"
 
-                        st.info(f"📄 File '{uploaded_file.name}' was truncated for analysis as it exceeds size limits. Only the first portion will be analyzed.")
-                        total_content_size += len(truncated_content)
-                    else:
-                        # Add the full file content
-                        code_contents.append({
-                            "filename": uploaded_file.name,
-                            "content": file_content
-                        })
-                        total_content_size += file_size
+                            code_contents.append({
+                                "filename": f"{uploaded_file.name} (truncated)",
+                                "content": truncated_content
+                            })
 
-                except Exception as file_error:
-                    st.error(f"⚠️ Error processing file '{uploaded_file.name}': {str(file_error)}")
-                    continue
+                            st.info(f"📄 File '{uploaded_file.name}' was truncated for analysis as it exceeds size limits. Only the first portion will be analyzed.")
+                            total_content_size += len(truncated_content)
+                        else:
+                            # Add the full file content
+                            code_contents.append({
+                                "filename": uploaded_file.name,
+                                "content": file_content
+                            })
+                            total_content_size += file_size
+                    except Exception as file_error:
+                        st.error(f"⚠️ Error processing file '{uploaded_file.name}': {str(file_error)}")
+                        continue
 
             if not code_contents:
                  st.warning("No readable file content found.")
