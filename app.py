@@ -1,31 +1,7 @@
 # Install necessary libraries
-import subprocess
-import sys
-
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-try:
-    import streamlit as st
-except ImportError:
-    print("Installing streamlit...")
-    install("streamlit")
-    import streamlit as st
-
-try:
-    import requests
-except ImportError:
-    print("Installing requests...")
-    install("requests")
-    import requests
-
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    print("Installing python-dotenv...")
-    install("python-dotenv")
-    from dotenv import load_dotenv
-
+import streamlit as st
+import requests
+from dotenv import load_dotenv
 import os
 import json
 # Load environment variables from .env file
