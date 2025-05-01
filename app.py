@@ -351,12 +351,10 @@ Balance criticism with recognition of good practices. Focus on providing actiona
 # --- Sidebar for instructions and info ---
 st.sidebar.header("📚 How to Use")
 st.sidebar.markdown("""
-1.  **Get an OpenRouter API Key**: Visit [OpenRouter](https://openrouter.ai/) to obtain your API key
-2.  **Enter Your API Key**: Paste your API key in the field on the main page
-3.  **Upload Code Files**: Select one or more code files for analysis
-4.  **Run Analysis**: Click the "Analyze Code" button and wait for results
-5.  **Review Results**: Examine the detailed analysis and recommendations
-6.  **Download Report**: Save the review for future reference or sharing
+1.  **Upload Code Files**: Select one or more code files for analysis
+2.  **Run Analysis**: Click the "Analyze Code" button and wait for results
+3.  **Review Results**: Examine the detailed analysis and recommendations
+4.  **Download Report**: Save the review for future reference or sharing
 """)
 
 st.sidebar.header("💡 Tips for Better Results")
@@ -372,8 +370,8 @@ st.sidebar.markdown("Your API key is only used for the current session and is no
 st.sidebar.header("🚀 Running Locally")
 st.sidebar.code("""
 # Clone the repository (if applicable)
-git clone https://github.com/yourusername/code-review-app.git
-cd code-review-app
+git clone https://github.com/AppleLamps/LampCodeReview.git
+cd LampCodeReview
 
 # Install dependencies
 pip install streamlit requests
