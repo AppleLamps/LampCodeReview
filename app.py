@@ -365,7 +365,7 @@ st.sidebar.markdown("""
 """)
 
 st.sidebar.header("🔑 API Key Security")
-st.sidebar.markdown("Your API key is only used for the current session and is not stored by this application.")
+st.sidebar.markdown("Don't worry about API keys! LampCodeReview is FREE!")
 
 st.sidebar.header("🚀 Running Locally")
 st.sidebar.code("""
