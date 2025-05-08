@@ -270,7 +270,7 @@ Balance criticism with recognition of good practices. Focus on providing actiona
                             }
                             ]
                             payload = {
-                            "model": "google/gemini-2.5-pro-preview-05-06",
+                            "model": "google/gemini-2.5-pro-preview",
                             "messages": messages,
                             "max_tokens": 65535,
                             "temperature": 0.2,
