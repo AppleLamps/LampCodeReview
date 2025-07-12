@@ -361,22 +361,6 @@ st.sidebar.markdown("""
 - Consider uploading interface definitions along with implementations
 """)
 
-st.sidebar.header("🔑 API Key Security")
-st.sidebar.markdown("Don't worry about API keys! LampCodeReview is FREE!")
-
-st.sidebar.header("🚀 Hope it helps!")
-st.sidebar.code("""
-# Let me know how it goes!
-@lamps_apple on X
-LampCodeReview
-
-# Install dependencies
-pip install streamlit requests
-
-# Run the app
-streamlit run app.py
-""")
-
 st.sidebar.markdown("""
 <div style="text-align: center; margin-top: 20px; color: gray; font-size: 0.8em;">
 Powered by xAI Grok-4 AI (via OpenRouter) | Created with Streamlit | v1.0.0
