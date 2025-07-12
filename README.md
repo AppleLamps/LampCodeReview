@@ -1,10 +1,10 @@
-# 🧠 AI-Powered Code Review with Gemini 2.5 (via OpenRouter)
+# 🧠 AI-Powered Code Review with Grok-4 (via OpenRouter)
 
 [![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/built%20with-Streamlit-ff69b4.svg)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Streamlit web application that leverages Google's Gemini 2.5 model (accessed via the OpenRouter API) to perform comprehensive, professional code reviews. This tool simulates an expert developer's thinking process to provide actionable insights into your codebase.
+A Streamlit web application that leverages xAI's Grok-4 model (accessed via the OpenRouter API) to perform comprehensive, professional code reviews. This tool simulates an expert developer's thinking process to provide actionable insights into your codebase.
 
 ## Overview
 
@@ -20,7 +20,7 @@ The AI uses a structured, multi-step thinking process (defined in the prompt) to
 
 ## Features
 
--   **AI-Powered Analysis:** Utilizes the `google/gemini-2.5-flash-preview:thinking` model via OpenRouter for cutting-edge code understanding.
+-   **AI-Powered Analysis:** Utilizes the `x-ai/grok-4` model via OpenRouter for cutting-edge code understanding.
 -   **Structured Thinking Process:** Guides the AI through steps like Initial Assessment, Deep Analysis, Issue Prioritization, and Recommendation Formulation.
 -   **Multi-File Upload:** Analyze multiple related code files simultaneously for context-aware reviews.
 -   **Wide Language Support:** Accepts common file extensions (`.py`, `.js`, `.java`, `.ts`, `.go`, `.rb`, `.php`, `.cs`, `.c`, `.cpp`, `.html`, `.css`, `.sql`, etc.).
@@ -42,7 +42,7 @@ The AI uses a structured, multi-step thinking process (defined in the prompt) to
     *   A specific multi-step "Thinking Process" for the AI to follow.
     *   The desired output format (Executive Summary, File-by-File Analysis, Overall Recommendations).
     *   The content of each uploaded file, clearly delimited.
-4.  **API Call:** The script sends the constructed prompt and file contents to the OpenRouter API, targeting the `google/gemini-2.5-flash-preview:thinking` model. Specific parameters like `max_tokens`, `temperature`, and `top_p` are set to encourage detailed and focused responses.
+4.  **API Call:** The script sends the constructed prompt and file contents to the OpenRouter API, targeting the `x-ai/grok-4` model.
 5.  **Response Processing:** The AI analyzes the code based on the prompt and returns a structured code review.
 6.  **Output:** The application displays the AI-generated review in the Streamlit interface, separated into "Full Review" and "Summary" tabs. A download button is provided for the full report.
 
@@ -51,7 +51,7 @@ The AI uses a structured, multi-step thinking process (defined in the prompt) to
 -   **Python:** Version 3.7 or higher.
 -   **pip:** Python package installer (usually comes with Python).
 -   **OpenRouter Account:** Sign up at [OpenRouter.ai](https://openrouter.ai/).
--   **OpenRouter API Key:** Obtain an API key from your OpenRouter dashboard. Ensure your key/account has access to the `google/gemini-2.5-flash-preview:thinking` model and sufficient credits.
+-   **OpenRouter API Key:** Obtain an API key from your OpenRouter dashboard. Ensure your key/account has access to the `x-ai/grok-4` model and sufficient credits.
 
 ## Installation
 
@@ -116,16 +116,16 @@ The application requires your OpenRouter API key. You have two options:
 -   **Web Framework:** Streamlit
 -   **API Interaction:** Requests
 -   **AI Model Provider:** OpenRouter API
--   **AI Model:** Google Gemini 2.5 Flash Preview (with thinking) (`google/gemini-2.5-flash-preview:thinking`)
+-   **AI Model:** xAI Grok-4 Flash Preview (with thinking) (`x-ai/grok-4`)
 -   **Environment Variables:** python-dotenv
 
 ## Limitations and Error Handling
 
 -   **API Costs:** Using the OpenRouter API incurs costs based on token usage. Be mindful of the size of the code you upload.
 -   **API Rate Limits/Quotas:** You might encounter errors if you exceed your OpenRouter API rate limits or run out of credits.
--   **Model Availability:** The specific Gemini model might occasionally be unavailable or experience high load.
--   **Context Window & Truncation:** While Gemini 2.5 has a large context window, extremely large codebases might still exceed limits. The script truncates individual files over 50MB and limits the total payload size, which might lead to incomplete analysis for very large inputs. A warning is displayed if the AI response appears truncated.
--   **AI Hallucinations:** Like all LLMs, Gemini can sometimes make errors or "hallucinate" information. Always critically evaluate the suggestions provided.
+-   **Model Availability:** The specific Grok-4 model might occasionally be unavailable or experience high load.
+-   **Context Window & Truncation:** While Grok-4 has a large context window, extremely large codebases might still exceed limits. The script truncates individual files over 50MB and limits the total payload size, which might lead to incomplete analysis for very large inputs. A warning is displayed if the AI response appears truncated.
+-   **AI Hallucinations:** Like all LLMs, Grok-4 can sometimes make errors or "hallucinate" information. Always critically evaluate the suggestions provided.
 -   **Content Filters:** Code containing potentially sensitive or harmful patterns might trigger API content filters, resulting in an error or refused analysis.
 -   **Network Issues:** Standard network errors can occur during the API call.
 
