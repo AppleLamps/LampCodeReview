@@ -364,6 +364,12 @@ st.sidebar.markdown("""
 st.sidebar.header("🔑 API Key Security")
 st.sidebar.markdown("Don't worry about API keys! LampCodeReview is FREE!")
 
+st.sidebar.header("🚀 Hope it helps!")
+st.sidebar.code("""
+# Let me know how it goes!
+@lamps_apple on X
+LampCodeReview
+
 # Install dependencies
 pip install streamlit requests
 
