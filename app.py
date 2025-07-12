@@ -270,11 +270,8 @@ Balance criticism with recognition of good practices. Focus on providing actiona
                             }
                             ]
                             payload = {
-                            "model": "google/gemini-2.5-pro-preview",
+                            "model": "x-ai/grok-4",
                             "messages": messages,
-                            "max_tokens": 65535,
-                            "temperature": 0.2,
-                            "top_p": 0.85
                             }
 
                             status_placeholder.info("Sending code and prompt to OpenRouter...")
