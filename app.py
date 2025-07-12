@@ -364,12 +364,6 @@ st.sidebar.markdown("""
 st.sidebar.header("🔑 API Key Security")
 st.sidebar.markdown("Don't worry about API keys! LampCodeReview is FREE!")
 
-st.sidebar.header("🚀 Running Locally")
-st.sidebar.code("""
-# Clone the repository (if applicable)
-git clone https://github.com/AppleLamps/LampCodeReview.git
-cd LampCodeReview
-
 # Install dependencies
 pip install streamlit requests
 
