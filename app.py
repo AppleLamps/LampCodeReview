@@ -14,14 +14,14 @@ import time
 
 st.set_page_config(layout="wide") # Use wide layout
 
-st.title("🧠 AI-Powered Code Review with Gemini 2.5 (OpenRouter)")
+st.title("🧠 AI-Powered Code Review with Grok-4 (OpenRouter)")
 
 # Use expanders for detailed explanations
 with st.expander("About This Tool & How It Works"):
     st.write("""
     ## Advanced Code Analysis with AI Thinking
 
-    Upload your code files for a comprehensive, professional review powered by Google's Gemini 2.5 model via OpenRouter with advanced thinking capabilities.
+    Upload your code files for a comprehensive, professional review powered by xAI's Grok-4 model via OpenRouter with advanced thinking capabilities.
 
     ### How It Works:
     The AI uses a multi-step thinking process to analyze your code, similar to how an expert developer would approach a code review:
@@ -189,7 +189,7 @@ else:
                 st.warning("No readable file content found.")
             else:
                 try:
-                    # Construct the prompt optimized for Gemini 2.5's thinking capabilities
+                    # Construct the prompt optimized for Grok-4's thinking capabilities
                     prompt_parts = [
                     """# Code Review Request
 
@@ -293,11 +293,11 @@ Balance criticism with recognition of good practices. Focus on providing actiona
                         except Exception as e:
                             st.error(f"⚠️ An error occurred during analysis: {str(e)}")
                             if "API key" in str(e).lower() or "authentication" in str(e).lower():
-                                st.warning("Please check that your OpenRouter API key is valid and has access to the Gemini model.")
+                                st.warning("Please check that your OpenRouter API key is valid and has access to the Grok-4 model.")
                             elif "quota" in str(e).lower() or "rate" in str(e).lower():
                                 st.warning("You may have exceeded your API quota or rate limits. Please try again later.")
                             elif "model" in str(e).lower():
-                                st.warning("The specified model may not be available. Try using a different Gemini model version.")
+                                st.warning("The specified model may not be available. Try using a different Grok-4 model version.")
                             elif "content" in str(e).lower() or "safety" in str(e).lower():
                                 st.warning("The content may have triggered safety filters. Please ensure your code doesn't contain sensitive or prohibited content.")
                             else:
@@ -379,6 +379,6 @@ streamlit run app.py
 
 st.sidebar.markdown("""
 <div style="text-align: center; margin-top: 20px; color: gray; font-size: 0.8em;">
-Powered by Google Gemini AI (via OpenRouter) | Created with Streamlit | v1.0.0
+Powered by xAI Grok-4 AI (via OpenRouter) | Created with Streamlit | v1.0.0
 </div>
 """, unsafe_allow_html=True)
