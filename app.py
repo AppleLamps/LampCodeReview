@@ -102,7 +102,7 @@ else:
                         # Quicker towards the end
                         time.sleep(0.01)
 
-                st.success("✅ Analysis complete! Displaying results below.")
+                st.success("✅ Analysis in progress! Results will be displayed below.")
 
                 # Prepare content for the model with size management
                 code_contents = []
