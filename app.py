@@ -270,7 +270,7 @@ Balance criticism with recognition of good practices. Focus on providing actiona
                             }
                             ]
                             payload = {
-                            "model": "x-ai/grok-4",
+                            "model": "openai/gpt-4.1",
                             "messages": messages,
                             }
 
