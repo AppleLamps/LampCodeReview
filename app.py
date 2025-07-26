@@ -204,7 +204,7 @@ Output Format:
             payload = {
                 "model": "x-ai/grok-4",
                 "messages": messages,
-                "stream": True  # Enable streaming for progressive output
+                "stream": False  # Enable streaming for progressive output
             }
 
             st.subheader("📊 Code Review Results")
