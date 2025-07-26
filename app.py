@@ -270,7 +270,7 @@ Balance criticism with recognition of good practices. Focus on providing actiona
                             }
                             ]
                             payload = {
-                            "model": "anthropic/claude-opus-4",
+                            "model": "x-ai/grok-4",
                             "messages": messages,
                             }
 
