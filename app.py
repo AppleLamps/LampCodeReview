@@ -204,11 +204,12 @@ Output Format:
             payload = {
                 "model": "x-ai/grok-4",
                 "messages": messages,
-                "stream": False  # Enable streaming for progressive output
+                "stream": True  # **FIXED**: Enable streaming
             }
 
             st.subheader("📊 Code Review Results")
-            review_container = st.container()
+            # **FIXED**: Create a placeholder for smooth streaming
+            review_placeholder = st.empty()
             review_text = ""
 
             with st.spinner("🧠 Grok-4 is analyzing..."):
@@ -219,14 +220,24 @@ Output Format:
                     if line:
                         decoded = line.decode('utf-8')
                         if decoded.startswith("data: "):
-                            data = json.loads(decoded[6:])
-                            if "choices" in data and data["choices"][0]["delta"].get("content"):
-                                chunk = data["choices"][0]["delta"]["content"]
-                                review_text += chunk
-                                review_container.markdown(review_text)
+                            # **FIXED**: Add error handling for JSON and end-of-stream signal
+                            try:
+                                if "[DONE]" in decoded:
+                                    break
+                                data = json.loads(decoded[6:])
+                                if "choices" in data and data["choices"][0]["delta"].get("content"):
+                                    chunk = data["choices"][0]["delta"]["content"]
+                                    review_text += chunk
+                                    # **FIXED**: Update the placeholder instead of the container
+                                    review_placeholder.markdown(review_text)
+                            except json.JSONDecodeError:
+                                continue # Ignore non-JSON lines
 
             # Post-processing
             if review_text:
+                # **FIXED**: Clear the placeholder before rendering final tabs
+                review_placeholder.empty()
+                
                 tab1, tab2, tab3 = st.tabs(["📝 Full Review", "📋 Summary", "🔍 Raw Prompt"])
                 with tab1:
                     st.markdown(review_text)
@@ -238,12 +249,12 @@ Output Format:
                 with tab3:
                     st.code(prompt, language="markdown")
             else:
-                st.error("No response received.")
+                st.error("No response received from the API.")
 
         except Exception as e:
-            st.error(f"Error during API call: {str(e)}")
+            st.error(f"An error occurred during the API call: {str(e)}")
             if "401" in str(e):
-                st.warning("Invalid API key. Please check your OpenRouter credentials.")
+                st.warning("Authentication error: Invalid API key. Please check your OpenRouter credentials.")
 
 # --- Sidebar ---
 st.sidebar.header("📚 Usage Guide")
