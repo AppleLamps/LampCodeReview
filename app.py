@@ -169,7 +169,7 @@ Focus on providing actionable insights. Balance criticism with recognition of go
                 {"role": "user", "content": prompt}
             ]
             payload = {
-                "model": "x-ai/grok-4",
+                "model": "anthropic/claude-opus-4",
                 "messages": messages,
                 "stream": True
             }
