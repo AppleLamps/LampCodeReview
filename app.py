@@ -169,7 +169,7 @@ Focus on providing actionable insights. Balance criticism with recognition of go
                 {"role": "user", "content": prompt}
             ]
             payload = {
-                "model": "anthropic/claude-opus-4",
+                "model": "openrouter/horizon-beta",
                 "messages": messages,
                 "stream": True
             }
