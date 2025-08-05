@@ -243,7 +243,7 @@ def stream_grok_review(api_key: str, user_prompt: str) -> Generator[str, None, N
     }
     payload = {
         # Updated model name to x-ai/grok-4 as requested
-        "model": "x-ai/grok-4",
+        "model": "anthropic/claude-opus-4.1",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
