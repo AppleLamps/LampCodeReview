@@ -23,15 +23,23 @@ SUPPORTED_EXTS = (
 SYSTEM_PROMPT = """[...your full prompt here...]"""  # Paste your original SYSTEM_PROMPT here!
 
 # System prompt for IDE implementation instructions mode
-IDE_INSTRUCTIONS_PROMPT = """You are CodeGuardian AI, an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
+IDE_INSTRUCTIONS_PROMPT = """You are Grok-4, an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
+
+IMPORTANT: You MUST ONLY reference the actual files provided in the user prompt. DO NOT create fictional filenames or assume files that are not explicitly shown. Always use the exact filenames as they appear in the "FILES TO ANALYZE:" list and the "===== FILE: [filename] =====" headers.
 
 Your task is to analyze the provided code and generate actionable, step-by-step instructions that users can copy and paste directly into their IDE's AI assistant (like Cursor or Trae) to implement the suggested improvements.
+
+Before providing instructions, first list all the files you are analyzing:
+
+## Files Being Analyzed
+[List each filename exactly as provided]
 
 For each improvement you identify, provide:
 
 1. **Clear Step Title**: A concise description of what needs to be implemented
 2. **IDE Instruction**: A complete, copy-pasteable instruction that includes:
-   - Specific file paths and line numbers when relevant
+   - ONLY the actual file paths from the provided files
+   - Specific line numbers when relevant (based on the actual code shown)
    - Exact code changes needed
    - Context about why the change is needed
    - Any dependencies or imports required
@@ -41,12 +49,14 @@ Format your response as:
 ## Step-by-Step IDE Implementation Instructions
 
 ### Step 1: [Title]
+**File:** [Use ONLY actual filename from the provided files]
 **Copy this to your IDE:**
 ```
 [Complete instruction that can be pasted directly to Cursor/Trae]
 ```
 
 ### Step 2: [Title]
+**File:** [Use ONLY actual filename from the provided files]
 **Copy this to your IDE:**
 ```
 [Complete instruction that can be pasted directly to Cursor/Trae]
@@ -54,7 +64,14 @@ Format your response as:
 
 Continue this pattern for all identified improvements.
 
-Focus on the most critical issues first (security, bugs, performance) and make each instruction self-contained and actionable. Each instruction should be specific enough that an IDE AI can implement it without additional context."""
+REMEMBER: 
+- NEVER reference files that are not in the provided code
+- NEVER create example filenames like 'main.py', 'utils.py', etc. unless they are actually provided
+- Always use the exact filenames from the "FILES TO ANALYZE:" list and "===== FILE: [filename] =====" headers
+- Base line numbers on the actual code content shown
+- If you see a "FILES TO ANALYZE:" section, ONLY use those filenames
+
+Focus on the most critical issues first (security, bugs, performance) and make each instruction self-contained and actionable."""
 
 # --- Helper Functions ---
 def process_uploaded_files(
@@ -116,9 +133,16 @@ def process_uploaded_files(
     return code_contents, warnings
 
 def construct_user_prompt(code_contents: List[Dict[str, str]]) -> str:
+    # Start with file list for clarity
     prompt_parts = ["Please review the following code files:\n\n"]
+    prompt_parts.append("FILES TO ANALYZE:\n")
+    for i, item in enumerate(code_contents, 1):
+        prompt_parts.append(f"{i}. {item['filename']}\n")
+    prompt_parts.append("\n" + "="*50 + "\n\n")
+    
+    # Add each file with prominent headers
     for item in code_contents:
-        prompt_parts.append(f"--- File: {item['filename']} ---\n\n```\n{item['content']}\n```\n\n")
+        prompt_parts.append(f"{'='*20} FILE: {item['filename']} {'='*20}\n\n```\n{item['content']}\n```\n\n")
     return "".join(prompt_parts)
 
 def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: bool = False) -> Generator[str, None, None]:
@@ -156,14 +180,14 @@ def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: boo
                     continue
 
 # --- Streamlit App UI ---
-st.set_page_config(layout="wide", page_title="CodeGuardian AI Review")
-st.title("🛡️ CodeGuardian AI Review")
+st.set_page_config(layout="wide", page_title="Grok-4 Code Review")
+st.title("🤖 Grok-4 Code Review")
 st.subheader("Powered by Grok via OpenRouter")
 
 with st.expander("About This Tool & How It Works", expanded=True):
     st.write("""
 ## Advanced Code Analysis with a Clear, Actionable Framework
-Upload your code for a comprehensive review by **CodeGuardian AI**, a persona designed for meticulous, expert-level analysis.
+Upload your code for a comprehensive review by **Grok-4**, a persona designed for meticulous, expert-level analysis.
 
 ### How It Works:
 The AI uses a structured thinking process to analyze your code across multiple dimensions:
@@ -265,6 +289,13 @@ if st.button(analyze_button_text, type="primary", use_container_width=True, key=
         if not code_contents:
             st.error("No valid or supported code files were found. Please check your upload.")
             st.stop()
+        
+        # Display uploaded files for verification
+        st.success(f"✅ Successfully processed {len(code_contents)} file(s):")
+        with st.expander("📋 Files Being Sent to AI (Click to verify)", expanded=False):
+            for i, item in enumerate(code_contents, 1):
+                st.write(f"{i}. **{item['filename']}** ({len(item['content'])} characters)")
+        
         st.session_state["user_prompt"] = construct_user_prompt(code_contents)
         st.session_state["ide_instructions_mode"] = ide_instructions_mode
         start_review()

@@ -1,4 +1,4 @@
-# 🧠 AI-Powered Code Review with Grok-4 (via OpenRouter)
+# 🤖 Grok-4 Code Review (via OpenRouter)
 
 [![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/built%20with-Streamlit-ff69b4.svg)](https://streamlit.io)
