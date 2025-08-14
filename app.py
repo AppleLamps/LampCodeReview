@@ -230,13 +230,15 @@ def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: boo
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/your-repo",
+        "X-Title": "Grok-4 Code Review"
     }
     
     system_prompt = IDE_INSTRUCTIONS_PROMPT if use_ide_instructions else SYSTEM_PROMPT
     
     data = {
-        "model": "x-ai/grok-beta",
+        "model": "x-ai/grok-4",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
