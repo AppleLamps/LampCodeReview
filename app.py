@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import streamlit as st
 import requests
 from dotenv import load_dotenv
@@ -21,7 +20,86 @@ SUPPORTED_EXTS = (
     ".xml", ".md", ".sh", ".bat", ".ps1"
 )
 
-SYSTEM_PROMPT = """[...your full prompt here...]"""  # Paste your original SYSTEM_PROMPT here!
+SYSTEM_PROMPT = """You are Grok-4, an expert code reviewer with deep knowledge across multiple programming languages and frameworks. Your role is to provide comprehensive, actionable code analysis that helps developers improve their code quality, security, and maintainability.
+
+## Your Analysis Framework
+
+Analyze the provided code across these key dimensions:
+
+### 1. 🏛️ Architecture & Design
+- Code structure and organization
+- Design patterns and architectural decisions
+- Modularity and separation of concerns
+- Scalability considerations
+- Maintainability factors
+
+### 2. 🔒 Security (Priority Focus)
+- Input validation and sanitization
+- Authentication and authorization flaws
+- Data exposure risks
+- Injection vulnerabilities (SQL, XSS, etc.)
+- Hardcoded secrets or credentials
+- Insecure dependencies
+- Error handling that might leak information
+
+### 3. ⚙️ Performance
+- Algorithmic efficiency
+- Resource management (memory, CPU, I/O)
+- Database query optimization
+- Caching strategies
+- Bottleneck identification
+
+### 4. ✅ Correctness & Resilience
+- Logic errors and edge cases
+- Error handling and recovery
+- Race conditions and concurrency issues
+- Data validation and type safety
+- Null/undefined handling
+
+### 5. ✨ Code Quality & Readability
+- Naming conventions and clarity
+- Code documentation and comments
+- Consistent formatting and style
+- Code duplication
+- Complexity and cognitive load
+
+## Response Format
+
+Structure your analysis as follows:
+
+## Executive Summary
+[Brief overview of the code's overall quality and main concerns]
+
+## Critical Issues (Fix Immediately)
+[Security vulnerabilities, major bugs, or critical performance issues]
+
+## Important Improvements
+[Significant issues that should be addressed soon]
+
+## Code Quality Enhancements
+[Style, readability, and maintainability improvements]
+
+## Positive Aspects
+[What the code does well - acknowledge good practices]
+
+## Recommendations
+[Prioritized action items with specific implementation guidance]
+
+For each issue identified:
+- **Severity**: Critical/High/Medium/Low
+- **Category**: Security/Performance/Correctness/Quality
+- **Description**: Clear explanation of the issue
+- **Impact**: What could go wrong
+- **Solution**: Specific code examples or implementation guidance
+- **File/Line**: Reference specific locations when possible
+
+## Guidelines
+- Be thorough but practical
+- Provide specific, actionable recommendations
+- Include code examples for complex fixes
+- Prioritize security and correctness over style
+- Be constructive and educational in tone
+- Focus on the most impactful improvements first"""
 
 # System prompt for IDE implementation instructions mode
 IDE_INSTRUCTIONS_PROMPT = """You are Grok-4, an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
@@ -78,59 +156,60 @@ Focus on the most critical issues first (security, bugs, performance) and make e
 def process_uploaded_files(
     uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile]
 ) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Process uploaded files and return code contents and warnings."""
     code_contents = []
     warnings = []
     total_size = 0
-    progress_bar_placeholder = st.empty()
-    status_text = st.empty()
-
-    if not uploaded_files:
-        return [], []
-
-    progress_bar = progress_bar_placeholder.progress(0)
-
-    def is_supported(filename: str) -> bool:
-        return filename.lower().endswith(SUPPORTED_EXTS)
-
-    def truncate(content: str, filename: str) -> str:
-        content_bytes = content.encode('utf-8', errors='ignore')
-        if len(content_bytes) > MAX_FILE_SIZE:
-            warnings.append(f"📄 File '{filename}' was truncated as it exceeds the {MAX_FILE_SIZE // 1024**2}MB limit.")
-            return content_bytes[:MAX_FILE_SIZE].decode('utf-8', errors='ignore') + "\n\n... [Content truncated] ..."
-        return content
-
-    for i, file in enumerate(uploaded_files):
-        progress_bar.progress((i + 1) / len(uploaded_files))
-        status_text.text(f"Processing {file.name}...")
-        if total_size >= MAX_TOTAL_SIZE:
-            warnings.append("🚨 Total content size limit reached. Some files were skipped.")
+    
+    for uploaded_file in uploaded_files:
+        file_size = uploaded_file.size
+        total_size += file_size
+        
+        if total_size > MAX_TOTAL_SIZE:
+            warnings.append(f"⚠️ Total upload size exceeded {MAX_TOTAL_SIZE // 1024**2}MB. Some files may be truncated.")
             break
-        try:
-            if file.name.lower().endswith('.zip'):
-                with zipfile.ZipFile(io.BytesIO(file.read()), 'r') as z:
-                    for info in z.infolist():
-                        if total_size >= MAX_TOTAL_SIZE:
-                            warnings.append("🚨 Total content size limit reached. Some files from the zip were skipped.")
-                            break
-                        if not info.is_dir() and is_supported(info.filename):
-                            with z.open(info.filename) as unzipped_file:
-                                file_content_bytes = unzipped_file.read()
-                                if len(file_content_bytes) > MAX_FILE_SIZE:
-                                    warnings.append(f"📄 File '{info.filename}' from zip was truncated as it exceeds the {MAX_FILE_SIZE // 1024**2}MB limit.")
-                                    file_content = file_content_bytes[:MAX_FILE_SIZE].decode("utf-8", errors="replace") + "\n\n... [Content truncated] ..."
-                                else:
-                                    file_content = file_content_bytes.decode("utf-8", errors="replace")
-                                code_contents.append({"filename": info.filename, "content": file_content})
-                                total_size += len(file_content.encode('utf-8', errors='ignore'))
-            elif is_supported(file.name):
-                file_content = file.getvalue().decode("utf-8", errors="replace")
-                truncated_content = truncate(file_content, file.name)
-                code_contents.append({"filename": file.name, "content": truncated_content})
-                total_size += len(truncated_content.encode('utf-8', errors='ignore'))
-        except Exception as e:
-            st.error(f"Error processing '{file.name}': {e}")
-    status_text.empty()
-    progress_bar_placeholder.empty()
+        
+        if uploaded_file.name.endswith('.zip'):
+            # Handle ZIP files
+            try:
+                with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                    for file_info in zip_ref.infolist():
+                        if not file_info.is_dir() and any(file_info.filename.endswith(ext) for ext in SUPPORTED_EXTS):
+                            with zip_ref.open(file_info) as file:
+                                content = file.read()
+                                if len(content) > MAX_FILE_SIZE:
+                                    content = content[:MAX_FILE_SIZE]
+                                    warnings.append(f"⚠️ File '{file_info.filename}' truncated to {MAX_FILE_SIZE // 1024**2}MB")
+                                
+                                try:
+                                    decoded_content = content.decode('utf-8')
+                                    code_contents.append({
+                                        'filename': file_info.filename,
+                                        'content': decoded_content
+                                    })
+                                except UnicodeDecodeError:
+                                    warnings.append(f"⚠️ Could not decode '{file_info.filename}' as UTF-8. Skipping.")
+            except zipfile.BadZipFile:
+                warnings.append(f"⚠️ '{uploaded_file.name}' is not a valid ZIP file. Skipping.")
+        else:
+            # Handle individual files
+            if any(uploaded_file.name.endswith(ext) for ext in SUPPORTED_EXTS):
+                content = uploaded_file.read()
+                if len(content) > MAX_FILE_SIZE:
+                    content = content[:MAX_FILE_SIZE]
+                    warnings.append(f"⚠️ File '{uploaded_file.name}' truncated to {MAX_FILE_SIZE // 1024**2}MB")
+                
+                try:
+                    decoded_content = content.decode('utf-8')
+                    code_contents.append({
+                        'filename': uploaded_file.name,
+                        'content': decoded_content
+                    })
+                except UnicodeDecodeError:
+                    warnings.append(f"⚠️ Could not decode '{uploaded_file.name}' as UTF-8. Skipping.")
+            else:
+                warnings.append(f"⚠️ '{uploaded_file.name}' has an unsupported file extension. Skipping.")
+    
     return code_contents, warnings
 
 def construct_user_prompt(code_contents: List[Dict[str, str]]) -> str:
@@ -147,38 +226,46 @@ def construct_user_prompt(code_contents: List[Dict[str, str]]) -> str:
     return "".join(prompt_parts)
 
 def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: bool = False) -> Generator[str, None, None]:
+    """Stream the Grok review response."""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/your-repo",
-        "X-Title": "AI CodeGuardian Review"
+        "Content-Type": "application/json"
     }
+    
     system_prompt = IDE_INSTRUCTIONS_PROMPT if use_ide_instructions else SYSTEM_PROMPT
-    payload = {
-        "model": "x-ai/grok-4",
+    
+    data = {
+        "model": "x-ai/grok-beta",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "stream": True
+        "stream": True,
+        "temperature": 0.1
     }
-    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=600)
-    response.raise_for_status()
-    for line in response.iter_lines():
-        if line:
-            decoded_line = line.decode('utf-8')
-            if decoded_line.startswith("data: "):
-                try:
-                    if "[DONE]" in decoded_line:
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, stream=True)
+        response.raise_for_status()
+        
+        for line in response.iter_lines():
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    line = line[6:]  # Remove 'data: ' prefix
+                    if line.strip() == '[DONE]':
                         break
-                    data_str = decoded_line[6:]
-                    if data_str:
-                        data = json.loads(data_str)
-                        if "choices" in data and data["choices"][0]["delta"].get("content"):
-                            yield data["choices"][0]["delta"]["content"]
-                except json.JSONDecodeError:
-                    continue
+                    try:
+                        chunk = json.loads(line)
+                        if 'choices' in chunk and len(chunk['choices']) > 0:
+                            delta = chunk['choices'][0].get('delta', {})
+                            if 'content' in delta:
+                                yield delta['content']
+                    except json.JSONDecodeError:
+                        continue
+    except requests.exceptions.RequestException as e:
+        yield f"Error: {str(e)}"
 
 # --- Streamlit App UI ---
 st.set_page_config(layout="wide", page_title="Grok-4 Code Review")
@@ -199,591 +286,188 @@ The AI uses a structured thinking process to analyze your code across multiple d
 5.  ✨ **Readability**: Assesses code clarity, conventions, and documentation.
 
 The AI then provides a prioritized list of findings, complete with actionable recommendations and code examples.
-""")
+    """)
 
-# --- API Key and File Upload ---
-# Try to get API key from environment variable first, then Streamlit secrets
-env_api_key = os.getenv("OPENROUTER_API_KEY")
-streamlit_api_key = None
+# API Key Input
+api_key = None
 
-try:
-    streamlit_api_key = st.secrets["OPENROUTER_API_KEY"]
-except (KeyError, FileNotFoundError):
-    pass
+# Try to get API key from environment or secrets
+if 'OPENROUTER_API_KEY' in os.environ:
+    api_key = os.environ['OPENROUTER_API_KEY']
+elif hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
+    api_key = st.secrets['OPENROUTER_API_KEY']
 
-if env_api_key:
-    api_key = env_api_key
-    st.info("API key found in environment variable (.env file).", icon="🔑")
-elif streamlit_api_key:
-    api_key = streamlit_api_key
-    st.info("API key found in Streamlit secrets.", icon="🔑")
-else:
-    api_key = st.text_input("Enter your OpenRouter API Key", type="password")
-    if not api_key:
-        st.warning("⚠️ No API key found. Please either:")
-        st.markdown("""
+if not api_key:
+    with st.expander("🔑 OpenRouter API Key Required", expanded=True):
+        st.info("""
+        To use this tool, you need an OpenRouter API key. You can:
+        
         1. **Add to .env file**: `OPENROUTER_API_KEY=your_key_here`
         2. **Add to Streamlit secrets**: Create `.streamlit/secrets.toml` with your key
         3. **Enter manually**: Use the input field above
         
         Get your API key from: https://openrouter.ai/keys
         """)
-if not api_key:
-    st.warning("Please enter your OpenRouter API key to proceed.")
-    st.stop()
+    api_key = st.text_input("Enter your OpenRouter API Key:", type="password")
 
-st.subheader("📁 Upload Your Code")
-with st.expander("Upload Tips"):
-    st.info(f"""
+if api_key:
+    st.success("✅ API Key loaded successfully!")
+
+# File Upload Section
+st.markdown("### 📁 Upload Your Code Files")
+st.info("""
 - For the best analysis, upload related files or a whole module in a `.zip` archive.
 - Supported extensions: `{', '.join(SUPPORTED_EXTS)}`
 - Max total size: {MAX_TOTAL_SIZE // 1024**2}MB. Larger files will be truncated.
 """)
 
 uploaded_files = st.file_uploader(
-    "Select code files or a .zip archive",
+    "Choose files to analyze",
     accept_multiple_files=True,
-    type=[ext.lstrip('.') for ext in SUPPORTED_EXTS] + ['zip']
+    type=list(SUPPORTED_EXTS) + ['zip']
 )
 
-# --- Analysis Mode Selection ---
-st.subheader("⚙️ Analysis Mode")
-ide_instructions_mode = st.checkbox(
-    "🔧 Generate IDE Implementation Instructions",
-    value=False,
-    help="When checked, the AI will provide step-by-step instructions that you can copy and paste directly into Cursor or Trae AI to implement the suggested improvements."
-)
+# Review Mode Selection
+st.markdown("### ⚙️ Review Mode")
+col1, col2 = st.columns(2)
 
-if ide_instructions_mode:
-    st.info("💡 **IDE Instructions Mode**: The AI will generate copy-pasteable instructions for your IDE assistant instead of a traditional code review.")
-else:
-    st.info("📋 **Standard Review Mode**: The AI will provide a comprehensive code analysis and recommendations.")
+with col1:
+    review_mode = st.radio(
+        "Select review mode:",
+        ["Standard Review", "IDE Implementation Instructions"],
+        help="Standard: Comprehensive analysis. IDE: Step-by-step instructions for Cursor/Trae AI."
+    )
 
-# --- State Initialization ---
-if "full_review_text" not in st.session_state:
-    st.session_state["full_review_text"] = ""
-if "user_prompt" not in st.session_state:
-    st.session_state["user_prompt"] = ""
-if "show_tabs" not in st.session_state:
-    st.session_state["show_tabs"] = False
-if "review_in_progress" not in st.session_state:
-    st.session_state["review_in_progress"] = False
-if "ide_instructions_mode" not in st.session_state:
-    st.session_state["ide_instructions_mode"] = False
+with col2:
+    if review_mode == "IDE Implementation Instructions":
+        st.info("💡 This mode generates copy-pasteable instructions for IDE AI assistants like Cursor or Trae AI.")
 
-# --- Analysis Execution ---
+# Initialize session state
+if 'review_complete' not in st.session_state:
+    st.session_state.review_complete = False
+if 'review_result' not in st.session_state:
+    st.session_state.review_result = ""
+if 'user_prompt' not in st.session_state:
+    st.session_state.user_prompt = ""
+
 def start_review():
-    st.session_state["full_review_text"] = ""
-    st.session_state["user_prompt"] = ""
-    st.session_state["show_tabs"] = False
-    st.session_state["review_in_progress"] = True
-
-analyze_button_text = "🔧 Generate IDE Instructions" if ide_instructions_mode else "🔍 Analyze Code"
-if st.button(analyze_button_text, type="primary", use_container_width=True, key="analyze_btn"):
-    if not uploaded_files:
-        st.warning("⚠️ Please upload code files to analyze.")
-        st.stop()
-    with st.spinner("🔄 Preparing and processing files..."):
-        code_contents, warnings = process_uploaded_files(uploaded_files)
-        for warning in warnings:
-            st.warning(warning)
-        if not code_contents:
-            st.error("No valid or supported code files were found. Please check your upload.")
-            st.stop()
-        
-        # Display uploaded files for verification
-        st.success(f"✅ Successfully processed {len(code_contents)} file(s):")
-        with st.expander("📋 Files Being Sent to AI (Click to verify)", expanded=False):
-            for i, item in enumerate(code_contents, 1):
-                st.write(f"{i}. **{item['filename']}** ({len(item['content'])} characters)")
-        
-        st.session_state["user_prompt"] = construct_user_prompt(code_contents)
-        st.session_state["ide_instructions_mode"] = ide_instructions_mode
-        start_review()
-
-# --- Streaming and Live Preview ---
-if st.session_state["review_in_progress"]:
-    full_review_text = ""
-    review_placeholder = st.empty()
-    try:
-        spinner_text = "🔧 Generating IDE implementation instructions..." if st.session_state.get("ide_instructions_mode", False) else "🧠 CodeGuardian AI is analyzing your code..."
-        spinner_text += " This may take several minutes."
-        with st.spinner(spinner_text):
-            for chunk in stream_grok_review(api_key, st.session_state["user_prompt"], st.session_state.get("ide_instructions_mode", False)):
-                full_review_text += chunk
-                review_placeholder.markdown(full_review_text + "▌")
-        review_placeholder.markdown(full_review_text)
-        st.session_state["full_review_text"] = full_review_text
-        st.session_state["review_in_progress"] = False
-        st.session_state["show_tabs"] = True
-    except requests.exceptions.HTTPError as e:
-        st.session_state["review_in_progress"] = False
-        st.error(f"An HTTP error occurred: {e.response.status_code} {e.response.reason}")
-        if e.response.status_code == 401:
-            st.warning("Authentication failed. Please check if your API key is correct and valid.")
-        elif e.response.status_code == 402:
-            st.warning("Payment Required. Please check your OpenRouter account credits.")
-        elif e.response.status_code == 429:
-            st.warning("Rate limit exceeded. Please try again later.")
-        elif e.response.status_code >= 500:
-            st.warning("API error: The service may be overloaded or down. Please try again later.")
-        try:
-            error_details = e.response.json()
-            st.code(json.dumps(error_details, indent=2), language="json")
-        except json.JSONDecodeError:
-            st.code(e.response.text, language="text")
-    except Exception as e:
-        st.session_state["review_in_progress"] = False
-        st.error(f"An unexpected error occurred: {e}")
-
-# --- Results Display in Tabs ---
-if st.session_state["show_tabs"] and st.session_state["full_review_text"]:
-    full_review_text = st.session_state["full_review_text"]
-    user_prompt = st.session_state["user_prompt"]
-    is_ide_mode = st.session_state.get("ide_instructions_mode", False)
-    
-    # Dynamic tab names based on mode
-    tab1_name = "🔧 IDE Instructions" if is_ide_mode else "📝 Full Review"
-    tab2_name = "📋 Quick Steps" if is_ide_mode else "📋 Summary"
-    
-    tab1, tab2, tab3 = st.tabs([tab1_name, tab2_name, "🔎 Full Prompt"])
-    with tab1:
-        st.markdown(full_review_text)
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        
-        # Dynamic download button based on mode
-        download_label = "💾 Download IDE Instructions (Markdown)" if is_ide_mode else "💾 Download Full Review (Markdown)"
-        file_prefix = "CodeGuardian_IDE_Instructions" if is_ide_mode else "CodeGuardian_Review"
-        
-        st.download_button(
-            label=download_label,
-            data=full_review_text,
-            file_name=f"{file_prefix}_{timestamp}.md",
-            mime="text/markdown"
-        )
-    with tab2:
-        if is_ide_mode:
-            # For IDE mode, try to extract the first few steps
-            steps_match = re.search(
-                r'### Step 1:.*?(?=### Step [4-9]:|\Z)',
-                full_review_text,
-                re.IGNORECASE | re.DOTALL
-            )
-            if steps_match:
-                st.markdown("## First 3 Steps (Quick Preview)")
-                st.markdown(steps_match.group(0))
-                st.info("💡 See the full instructions in the 'IDE Instructions' tab above.")
-            else:
-                st.info("Could not automatically extract quick steps. Please see the 'IDE Instructions' tab.")
-        else:
-            # Original summary logic for standard review mode
-            summary_match = re.search(
-                r'## 1\.\s+Overall Assessment.*?(?=## 2\.|\Z)',
-                full_review_text,
-                re.IGNORECASE | re.DOTALL
-            )
-            if summary_match:
-                st.markdown(summary_match.group(0))
-            else:
-                st.info("Could not automatically extract a summary. Please see the 'Full Review' tab.")
-    with tab3:
-        with st.expander("System Prompt (The AI's Instructions)"):
-            current_prompt = IDE_INSTRUCTIONS_PROMPT if is_ide_mode else SYSTEM_PROMPT
-            st.markdown(f"```markdown\n{current_prompt}\n```")
-        with st.expander("User Prompt (Your Code)"):
-            st.code(user_prompt, language="markdown")
-=======
-import streamlit as st
-import requests
-from dotenv import load_dotenv
-import os
-import json
-import time
-import zipfile
-import io
-import re
-from typing import List, Dict, Generator, Tuple
-
-# --- Constants and Configuration ---
-load_dotenv()
-
-MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB
-MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
-SUPPORTED_EXTS = (
-    ".py", ".js", ".java", ".ts", ".go", ".rb", ".php", ".cs", ".c", ".cpp",
-    ".h", ".hpp", ".html", ".htm", ".css", ".sql", ".yaml", ".yml", ".json",
-    ".xml", ".md", ".sh", ".bat", ".ps1"
-)
-
-SYSTEM_PROMPT = """[...your full prompt here...]"""  # Paste your original SYSTEM_PROMPT here!
-
-# System prompt for IDE implementation instructions mode
-IDE_INSTRUCTIONS_PROMPT = """You are Grok-4, an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
-
-IMPORTANT: You MUST ONLY reference the actual files provided in the user prompt. DO NOT create fictional filenames or assume files that are not explicitly shown. Always use the exact filenames as they appear in the "FILES TO ANALYZE:" list and the "===== FILE: [filename] =====" headers.
-
-Your task is to analyze the provided code and generate actionable, step-by-step instructions that users can copy and paste directly into their IDE's AI assistant (like Cursor or Trae) to implement the suggested improvements.
-
-Before providing instructions, first list all the files you are analyzing:
-
-## Files Being Analyzed
-[List each filename exactly as provided]
-
-For each improvement you identify, provide:
-
-1. **Clear Step Title**: A concise description of what needs to be implemented
-2. **IDE Instruction**: A complete, copy-pasteable instruction that includes:
-   - ONLY the actual file paths from the provided files
-   - Specific line numbers when relevant (based on the actual code shown)
-   - Exact code changes needed
-   - Context about why the change is needed
-   - Any dependencies or imports required
-
-Format your response as:
-
-## Step-by-Step IDE Implementation Instructions
-
-### Step 1: [Title]
-**File:** [Use ONLY actual filename from the provided files]
-**Copy this to your IDE:**
-```
-[Complete instruction that can be pasted directly to Cursor/Trae]
-```
-
-### Step 2: [Title]
-**File:** [Use ONLY actual filename from the provided files]
-**Copy this to your IDE:**
-```
-[Complete instruction that can be pasted directly to Cursor/Trae]
-```
-
-Continue this pattern for all identified improvements.
-
-REMEMBER: 
-- NEVER reference files that are not in the provided code
-- NEVER create example filenames like 'main.py', 'utils.py', etc. unless they are actually provided
-- Always use the exact filenames from the "FILES TO ANALYZE:" list and "===== FILE: [filename] =====" headers
-- Base line numbers on the actual code content shown
-- If you see a "FILES TO ANALYZE:" section, ONLY use those filenames
-
-Focus on the most critical issues first (security, bugs, performance) and make each instruction self-contained and actionable."""
-
-# --- Helper Functions ---
-def process_uploaded_files(
-    uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile]
-) -> Tuple[List[Dict[str, str]], List[str]]:
-    code_contents = []
-    warnings = []
-    total_size = 0
-    progress_bar_placeholder = st.empty()
-    status_text = st.empty()
-
-    if not uploaded_files:
-        return [], []
-
-    progress_bar = progress_bar_placeholder.progress(0)
-
-    def is_supported(filename: str) -> bool:
-        return filename.lower().endswith(SUPPORTED_EXTS)
-
-    def truncate(content: str, filename: str) -> str:
-        content_bytes = content.encode('utf-8', errors='ignore')
-        if len(content_bytes) > MAX_FILE_SIZE:
-            warnings.append(f"📄 File '{filename}' was truncated as it exceeds the {MAX_FILE_SIZE // 1024**2}MB limit.")
-            return content_bytes[:MAX_FILE_SIZE].decode('utf-8', errors='ignore') + "\n\n... [Content truncated] ..."
-        return content
-
-    for i, file in enumerate(uploaded_files):
-        progress_bar.progress((i + 1) / len(uploaded_files))
-        status_text.text(f"Processing {file.name}...")
-        if total_size >= MAX_TOTAL_SIZE:
-            warnings.append("🚨 Total content size limit reached. Some files were skipped.")
-            break
-        try:
-            if file.name.lower().endswith('.zip'):
-                with zipfile.ZipFile(io.BytesIO(file.read()), 'r') as z:
-                    for info in z.infolist():
-                        if total_size >= MAX_TOTAL_SIZE:
-                            warnings.append("🚨 Total content size limit reached. Some files from the zip were skipped.")
-                            break
-                        if not info.is_dir() and is_supported(info.filename):
-                            with z.open(info.filename) as unzipped_file:
-                                file_content_bytes = unzipped_file.read()
-                                if len(file_content_bytes) > MAX_FILE_SIZE:
-                                    warnings.append(f"📄 File '{info.filename}' from zip was truncated as it exceeds the {MAX_FILE_SIZE // 1024**2}MB limit.")
-                                    file_content = file_content_bytes[:MAX_FILE_SIZE].decode("utf-8", errors="replace") + "\n\n... [Content truncated] ..."
-                                else:
-                                    file_content = file_content_bytes.decode("utf-8", errors="replace")
-                                code_contents.append({"filename": info.filename, "content": file_content})
-                                total_size += len(file_content.encode('utf-8', errors='ignore'))
-            elif is_supported(file.name):
-                file_content = file.getvalue().decode("utf-8", errors="replace")
-                truncated_content = truncate(file_content, file.name)
-                code_contents.append({"filename": file.name, "content": truncated_content})
-                total_size += len(truncated_content.encode('utf-8', errors='ignore'))
-        except Exception as e:
-            st.error(f"Error processing '{file.name}': {e}")
-    status_text.empty()
-    progress_bar_placeholder.empty()
-    return code_contents, warnings
-
-def construct_user_prompt(code_contents: List[Dict[str, str]]) -> str:
-    # Start with file list for clarity
-    prompt_parts = ["Please review the following code files:\n\n"]
-    prompt_parts.append("FILES TO ANALYZE:\n")
-    for i, item in enumerate(code_contents, 1):
-        prompt_parts.append(f"{i}. {item['filename']}\n")
-    prompt_parts.append("\n" + "="*50 + "\n\n")
-    
-    # Add each file with prominent headers
-    for item in code_contents:
-        prompt_parts.append(f"{'='*20} FILE: {item['filename']} {'='*20}\n\n```\n{item['content']}\n```\n\n")
-    return "".join(prompt_parts)
-
-def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: bool = False) -> Generator[str, None, None]:
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/your-repo",
-        "X-Title": "AI CodeGuardian Review"
-    }
-    system_prompt = IDE_INSTRUCTIONS_PROMPT if use_ide_instructions else SYSTEM_PROMPT
-    payload = {
-        "model": "x-ai/grok-4",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "stream": True
-    }
-    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=600)
-    response.raise_for_status()
-    for line in response.iter_lines():
-        if line:
-            decoded_line = line.decode('utf-8')
-            if decoded_line.startswith("data: "):
-                try:
-                    if "[DONE]" in decoded_line:
-                        break
-                    data_str = decoded_line[6:]
-                    if data_str:
-                        data = json.loads(data_str)
-                        if "choices" in data and data["choices"][0]["delta"].get("content"):
-                            yield data["choices"][0]["delta"]["content"]
-                except json.JSONDecodeError:
-                    continue
-
-# --- Streamlit App UI ---
-st.set_page_config(layout="wide", page_title="Grok-4 Code Review")
-st.title("🤖 Grok-4 Code Review")
-st.subheader("Powered by Grok via OpenRouter")
-
-with st.expander("About This Tool & How It Works", expanded=True):
-    st.write("""
-## Advanced Code Analysis with a Clear, Actionable Framework
-Upload your code for a comprehensive review by **Grok-4**, a persona designed for meticulous, expert-level analysis.
-
-### How It Works:
-The AI uses a structured thinking process to analyze your code across multiple dimensions:
-1.  🏛️ **Architecture & Design**: Evaluates structure, scalability, and maintainability.
-2.  🔒 **Security**: A primary focus, checking for common vulnerabilities like injection, hardcoded secrets, etc.
-3.  ⚙️ **Performance**: Identifies bottlenecks and inefficient resource management.
-4.  ✅ **Correctness & Resilience**: Looks for logic errors, missed edge cases, and poor error handling.
-5.  ✨ **Readability**: Assesses code clarity, conventions, and documentation.
-
-The AI then provides a prioritized list of findings, complete with actionable recommendations and code examples.
-""")
-
-# --- API Key and File Upload ---
-# Try to get API key from environment variable first, then Streamlit secrets
-env_api_key = os.getenv("OPENROUTER_API_KEY")
-streamlit_api_key = None
-
-try:
-    streamlit_api_key = st.secrets["OPENROUTER_API_KEY"]
-except (KeyError, FileNotFoundError):
-    pass
-
-if env_api_key:
-    api_key = env_api_key
-    st.info("API key found in environment variable (.env file).", icon="🔑")
-elif streamlit_api_key:
-    api_key = streamlit_api_key
-    st.info("API key found in Streamlit secrets.", icon="🔑")
-else:
-    api_key = st.text_input("Enter your OpenRouter API Key", type="password")
+    """Process files and start the review."""
     if not api_key:
-        st.warning("⚠️ No API key found. Please either:")
-        st.markdown("""
-        1. **Add to .env file**: `OPENROUTER_API_KEY=your_key_here`
-        2. **Add to Streamlit secrets**: Create `.streamlit/secrets.toml` with your key
-        3. **Enter manually**: Use the input field above
-        
-        Get your API key from: https://openrouter.ai/keys
-        """)
-if not api_key:
-    st.warning("Please enter your OpenRouter API key to proceed.")
-    st.stop()
-
-st.subheader("📁 Upload Your Code")
-with st.expander("Upload Tips"):
-    st.info(f"""
-- For the best analysis, upload related files or a whole module in a `.zip` archive.
-- Supported extensions: `{', '.join(SUPPORTED_EXTS)}`
-- Max total size: {MAX_TOTAL_SIZE // 1024**2}MB. Larger files will be truncated.
-""")
-
-uploaded_files = st.file_uploader(
-    "Select code files or a .zip archive",
-    accept_multiple_files=True,
-    type=[ext.lstrip('.') for ext in SUPPORTED_EXTS] + ['zip']
-)
-
-# --- Analysis Mode Selection ---
-st.subheader("⚙️ Analysis Mode")
-ide_instructions_mode = st.checkbox(
-    "🔧 Generate IDE Implementation Instructions",
-    value=False,
-    help="When checked, the AI will provide step-by-step instructions that you can copy and paste directly into Cursor or Trae AI to implement the suggested improvements."
-)
-
-if ide_instructions_mode:
-    st.info("💡 **IDE Instructions Mode**: The AI will generate copy-pasteable instructions for your IDE assistant instead of a traditional code review.")
-else:
-    st.info("📋 **Standard Review Mode**: The AI will provide a comprehensive code analysis and recommendations.")
-
-# --- State Initialization ---
-if "full_review_text" not in st.session_state:
-    st.session_state["full_review_text"] = ""
-if "user_prompt" not in st.session_state:
-    st.session_state["user_prompt"] = ""
-if "show_tabs" not in st.session_state:
-    st.session_state["show_tabs"] = False
-if "review_in_progress" not in st.session_state:
-    st.session_state["review_in_progress"] = False
-if "ide_instructions_mode" not in st.session_state:
-    st.session_state["ide_instructions_mode"] = False
-
-# --- Analysis Execution ---
-def start_review():
-    st.session_state["full_review_text"] = ""
-    st.session_state["user_prompt"] = ""
-    st.session_state["show_tabs"] = False
-    st.session_state["review_in_progress"] = True
-
-analyze_button_text = "🔧 Generate IDE Instructions" if ide_instructions_mode else "🔍 Analyze Code"
-if st.button(analyze_button_text, type="primary", use_container_width=True, key="analyze_btn"):
+        st.error("Please provide an OpenRouter API key.")
+        return
+    
     if not uploaded_files:
-        st.warning("⚠️ Please upload code files to analyze.")
-        st.stop()
-    with st.spinner("🔄 Preparing and processing files..."):
+        st.error("Please upload at least one file.")
+        return
+    
+    # Process uploaded files
+    with st.spinner("Processing uploaded files..."):
         code_contents, warnings = process_uploaded_files(uploaded_files)
+    
+    if warnings:
         for warning in warnings:
             st.warning(warning)
-        if not code_contents:
-            st.error("No valid or supported code files were found. Please check your upload.")
-            st.stop()
-        
-        # Display uploaded files for verification
-        st.success(f"✅ Successfully processed {len(code_contents)} file(s):")
-        with st.expander("📋 Files Being Sent to AI (Click to verify)", expanded=False):
-            for i, item in enumerate(code_contents, 1):
-                st.write(f"{i}. **{item['filename']}** ({len(item['content'])} characters)")
-        
-        st.session_state["user_prompt"] = construct_user_prompt(code_contents)
-        st.session_state["ide_instructions_mode"] = ide_instructions_mode
-        start_review()
-
-# --- Streaming and Live Preview ---
-if st.session_state["review_in_progress"]:
-    full_review_text = ""
-    review_placeholder = st.empty()
-    try:
-        spinner_text = "🔧 Generating IDE implementation instructions..." if st.session_state.get("ide_instructions_mode", False) else "🧠 CodeGuardian AI is analyzing your code..."
-        spinner_text += " This may take several minutes."
-        with st.spinner(spinner_text):
-            for chunk in stream_grok_review(api_key, st.session_state["user_prompt"], st.session_state.get("ide_instructions_mode", False)):
-                full_review_text += chunk
-                review_placeholder.markdown(full_review_text + "▌")
-        review_placeholder.markdown(full_review_text)
-        st.session_state["full_review_text"] = full_review_text
-        st.session_state["review_in_progress"] = False
-        st.session_state["show_tabs"] = True
-    except requests.exceptions.HTTPError as e:
-        st.session_state["review_in_progress"] = False
-        st.error(f"An HTTP error occurred: {e.response.status_code} {e.response.reason}")
-        if e.response.status_code == 401:
-            st.warning("Authentication failed. Please check if your API key is correct and valid.")
-        elif e.response.status_code == 402:
-            st.warning("Payment Required. Please check your OpenRouter account credits.")
-        elif e.response.status_code == 429:
-            st.warning("Rate limit exceeded. Please try again later.")
-        elif e.response.status_code >= 500:
-            st.warning("API error: The service may be overloaded or down. Please try again later.")
-        try:
-            error_details = e.response.json()
-            st.code(json.dumps(error_details, indent=2), language="json")
-        except json.JSONDecodeError:
-            st.code(e.response.text, language="text")
-    except Exception as e:
-        st.session_state["review_in_progress"] = False
-        st.error(f"An unexpected error occurred: {e}")
-
-# --- Results Display in Tabs ---
-if st.session_state["show_tabs"] and st.session_state["full_review_text"]:
-    full_review_text = st.session_state["full_review_text"]
-    user_prompt = st.session_state["user_prompt"]
-    is_ide_mode = st.session_state.get("ide_instructions_mode", False)
     
-    # Dynamic tab names based on mode
-    tab1_name = "🔧 IDE Instructions" if is_ide_mode else "📝 Full Review"
-    tab2_name = "📋 Quick Steps" if is_ide_mode else "📋 Summary"
+    if not code_contents:
+        st.error("No valid code files found. Please check file extensions and content.")
+        return
     
-    tab1, tab2, tab3 = st.tabs([tab1_name, tab2_name, "🔎 Full Prompt"])
+    # Display debug information about uploaded files
+    st.success(f"✅ Successfully processed {len(code_contents)} file(s)")
+    with st.expander("📋 Files being sent to AI", expanded=False):
+        for i, item in enumerate(code_contents, 1):
+            st.write(f"{i}. **{item['filename']}** ({len(item['content']):,} characters)")
+    
+    # Construct user prompt
+    user_prompt = construct_user_prompt(code_contents)
+    st.session_state.user_prompt = user_prompt
+    
+    # Determine if using IDE instructions mode
+    use_ide_instructions = review_mode == "IDE Implementation Instructions"
+    
+    # Start streaming review
+    with st.spinner("🤖 Grok is analyzing your code..."):
+        progress_bar = st.progress(0)
+        result_container = st.empty()
+        
+        full_response = ""
+        chunk_count = 0
+        
+        for chunk in stream_grok_review(api_key, user_prompt, use_ide_instructions):
+            chunk_count += 1
+            full_response += chunk
+            
+            # Update progress (simulate progress based on chunk count)
+            progress = min(chunk_count / 100, 0.95)  # Cap at 95% until complete
+            progress_bar.progress(progress)
+            
+            # Update the display with current response
+            result_container.markdown(full_response)
+        
+        # Complete the progress bar
+        progress_bar.progress(1.0)
+        time.sleep(0.5)
+        progress_bar.empty()
+    
+    # Store the result
+    st.session_state.review_result = full_response
+    st.session_state.review_complete = True
+
+# Analyze Button
+if st.button("🚀 Analyze Code", type="primary", use_container_width=True):
+    start_review()
+
+# Display Results
+if st.session_state.review_complete and st.session_state.review_result:
+    st.markdown("---")
+    st.markdown("## 📊 Analysis Results")
+    
+    # Create tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📋 Full Review", "📝 Summary", "🔧 Debug Info"])
+    
     with tab1:
-        st.markdown(full_review_text)
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        st.markdown(st.session_state.review_result)
         
-        # Dynamic download button based on mode
-        download_label = "💾 Download IDE Instructions (Markdown)" if is_ide_mode else "💾 Download Full Review (Markdown)"
-        file_prefix = "CodeGuardian_IDE_Instructions" if is_ide_mode else "CodeGuardian_Review"
-        
+        # Download button
         st.download_button(
-            label=download_label,
-            data=full_review_text,
-            file_name=f"{file_prefix}_{timestamp}.md",
+            label="📥 Download Full Review",
+            data=st.session_state.review_result,
+            file_name="code_review.md",
             mime="text/markdown"
         )
+    
     with tab2:
-        if is_ide_mode:
-            # For IDE mode, try to extract the first few steps
-            steps_match = re.search(
-                r'### Step 1:.*?(?=### Step [4-9]:|\Z)',
-                full_review_text,
-                re.IGNORECASE | re.DOTALL
-            )
-            if steps_match:
-                st.markdown("## First 3 Steps (Quick Preview)")
-                st.markdown(steps_match.group(0))
-                st.info("💡 See the full instructions in the 'IDE Instructions' tab above.")
-            else:
-                st.info("Could not automatically extract quick steps. Please see the 'IDE Instructions' tab.")
-        else:
-            # Original summary logic for standard review mode
-            summary_match = re.search(
-                r'## 1\.\s+Overall Assessment.*?(?=## 2\.|\Z)',
-                full_review_text,
-                re.IGNORECASE | re.DOTALL
-            )
+        # Try to extract summary from the review
+        review_text = st.session_state.review_result
+        
+        # Look for summary section
+        summary_patterns = [
+            r"## Executive Summary[\s\S]*?(?=##|$)",
+            r"## Summary[\s\S]*?(?=##|$)",
+            r"### Summary[\s\S]*?(?=###|##|$)"
+        ]
+        
+        summary_found = False
+        for pattern in summary_patterns:
+            summary_match = re.search(pattern, review_text, re.IGNORECASE)
             if summary_match:
                 st.markdown(summary_match.group(0))
+                summary_found = True
+                break
+        
+        if not summary_found:
+            # If no summary section found, show first few paragraphs
+            paragraphs = review_text.split('\n\n')[:3]
+            summary = '\n\n'.join(paragraphs)
+            if summary:
+                st.markdown("### Key Findings")
+                st.markdown(summary)
             else:
                 st.info("Could not automatically extract a summary. Please see the 'Full Review' tab.")
+    
     with tab3:
         with st.expander("System Prompt (The AI's Instructions)"):
-            current_prompt = IDE_INSTRUCTIONS_PROMPT if is_ide_mode else SYSTEM_PROMPT
+            current_prompt = IDE_INSTRUCTIONS_PROMPT if review_mode == "IDE Implementation Instructions" else SYSTEM_PROMPT
             st.markdown(f"```markdown\n{current_prompt}\n```")
         with st.expander("User Prompt (Your Code)"):
-            st.code(user_prompt, language="markdown")
->>>>>>> 4998ca48e9747143ccb02ccd756fe05fd6b5af50
+            st.code(st.session_state.user_prompt, language="markdown")
