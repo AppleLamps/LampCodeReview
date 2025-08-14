@@ -166,7 +166,7 @@ def process_uploaded_files(
         total_size += file_size
         
         if total_size > MAX_TOTAL_SIZE:
-            warnings.append(f"⚠️ Total upload size exceeded {MAX_TOTAL_SIZE // 1024**2}MB. Some files may be truncated.")
+            warnings.append(f"⚠️ Total upload size exceeded {MAX_TOTAL_SIZE // 1024**2}MB. Skipping remaining files.")
             break
         
         if uploaded_file.name.endswith('.zip'):
@@ -266,8 +266,15 @@ def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: boo
                                 yield delta['content']
                     except json.JSONDecodeError:
                         continue
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            yield "Error: Invalid API key. Please check your OpenRouter credentials."
+        elif e.response.status_code == 429:
+            yield "Error: Rate limit exceeded. Please try again later or check your OpenRouter quota."
+        else:
+            yield f"HTTP Error: {str(e)}"
     except requests.exceptions.RequestException as e:
-        yield f"Error: {str(e)}"
+        yield f"Network Error: {str(e)}"
 
 # --- Streamlit App UI ---
 st.set_page_config(layout="wide", page_title="Grok-4 Code Review")
