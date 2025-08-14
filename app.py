@@ -313,6 +313,10 @@ if not api_key:
     api_key = st.text_input("Enter your OpenRouter API Key:", type="password")
 
 if api_key:
+    if not api_key.startswith('sk-or-'):
+        st.error("Invalid OpenRouter API key format. It should start with 'sk-or-'. Please check and try again.")
+        st.stop()
+    
     st.success("✅ API Key loaded successfully!")
 
 # File Upload Section
