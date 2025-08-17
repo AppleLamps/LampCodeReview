@@ -17,7 +17,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
 SUPPORTED_EXTS = (
     ".py", ".js", ".java", ".ts", ".go", ".rb", ".php", ".cs", ".c", ".cpp",
     ".h", ".hpp", ".html", ".htm", ".css", ".sql", ".yaml", ".yml", ".json",
-    ".xml", ".md", ".sh", ".bat", ".ps1"
+    ".xml", ".md", ".sh", ".bat", ".rs", ".ps1"
 )
 
 SYSTEM_PROMPT = """You are Grok-4, an expert code reviewer with deep knowledge across multiple programming languages and frameworks. Your role is to provide comprehensive, actionable code analysis that helps developers improve their code quality, security, and maintainability.
