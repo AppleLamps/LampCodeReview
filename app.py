@@ -1,8 +1,3 @@
-Of course, here is the complete, corrected script.
-
-This version includes the fixes to ensure the "Debug Info" tab accurately displays the system prompt that was used during the analysis.
-
-```python
 import streamlit as st
 import requests
 from dotenv import load_dotenv
@@ -10,9 +5,8 @@ import os
 import json
 import time
 import zipfile
-import io
 import re
-from typing import List, Dict, Generator, Tuple
+from typing import List, Dict, Generator, Tuple, Any
 
 # --- Constants and Configuration ---
 load_dotenv()
@@ -24,8 +18,7 @@ SUPPORTED_EXTS = (
     ".h", ".hpp", ".html", ".htm", ".css", ".sql", ".yaml", ".yml", ".json",
     ".xml", ".md", ".sh", ".bat", ".rs", ".ps1"
 )
-
-SYSTEM_PROMPT = """You are Grok-4, an expert code reviewer with deep knowledge across multiple programming languages and frameworks. Your role is to provide comprehensive, actionable code analysis that helps developers improve their code quality, security, and maintainability.
+SYSTEM_PROMPT = r"""You are Grok-4, an expert code reviewer with deep knowledge across multiple programming languages and frameworks. Your role is to provide comprehensive, actionable code analysis that helps developers improve their code quality, security, and maintainability.
 
 ## Your Analysis Framework
 
@@ -107,7 +100,7 @@ For each issue identified:
 - Focus on the most impactful improvements first"""
 
 # System prompt for IDE implementation instructions mode
-IDE_INSTRUCTIONS_PROMPT = """You are Grok-4, an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
+IDE_INSTRUCTIONS_PROMPT = r"""You are Grok-4, an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
 
 ## Core Analysis Framework
 
@@ -161,11 +154,11 @@ Then provide improvements in this format:
 
 Include:
 
-  - Exact file path: [filename]
-  - Specific changes needed
-  - Why this change is important
-  - How to verify it works: [specific test/check]
-  - If it fails: [rollback instruction]
+    - Exact file path: [filename]
+    - Specific changes needed
+    - Why this change is important
+    - How to verify it works: [specific test/check]
+    - If it fails: [rollback instruction]
 
 <!-- end list -->
 
@@ -262,7 +255,7 @@ Focus on the most critical issues first (security, bugs, performance) and make e
 
 # --- Helper Functions ---
 def process_uploaded_files(
-    uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile]
+    uploaded_files: List[Any]
 ) -> Tuple[List[Dict[str, str]], List[str]]:
     """Process uploaded files and return code contents and warnings."""
     code_contents = []
@@ -445,7 +438,8 @@ st.info(f"""
 uploaded_files = st.file_uploader(
     "Choose files to analyze",
     accept_multiple_files=True,
-    type=list(SUPPORTED_EXTS) + ['zip']
+    # Streamlit expects extensions without leading dots
+    type=[ext.lstrip('.') for ext in SUPPORTED_EXTS] + ['zip']
 )
 
 # Review Mode Selection
@@ -600,4 +594,3 @@ if st.session_state.review_complete and st.session_state.review_result:
             st.markdown(f"```markdown\n{current_prompt}\n```")
         with st.expander("User Prompt (Your Code)"):
             st.code(st.session_state.user_prompt, language="markdown")
-````
