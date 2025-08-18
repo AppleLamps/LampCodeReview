@@ -6,10 +6,15 @@ import json
 import time
 import zipfile
 import re
+import logging
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Generator, Tuple, Any
 
 # --- Constants and Configuration ---
-load_dotenv()
+# Robustly load .env from the app directory (and let python-dotenv auto-discover as fallback)
+APP_DIR = Path(__file__).resolve().parent
+_ = load_dotenv(APP_DIR / ".env", override=False)  # Load from app directory with fallback to parent discovery
 
 MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
@@ -18,7 +23,7 @@ SUPPORTED_EXTS = (
     ".h", ".hpp", ".html", ".htm", ".css", ".sql", ".yaml", ".yml", ".json",
     ".xml", ".md", ".sh", ".bat", ".rs", ".ps1"
 )
-SYSTEM_PROMPT = r"""You are Grok-4, an expert code reviewer with deep knowledge across multiple programming languages and frameworks. Your role is to provide comprehensive, actionable code analysis that helps developers improve their code quality, security, and maintainability.
+SYSTEM_PROMPT = r"""You are an expert code reviewer with deep knowledge across multiple programming languages and frameworks. Your role is to provide comprehensive, actionable code analysis that helps developers improve their code quality, security, and maintainability.
 
 ## Your Analysis Framework
 
@@ -100,7 +105,7 @@ For each issue identified:
 - Focus on the most impactful improvements first"""
 
 # System prompt for IDE implementation instructions mode
-IDE_INSTRUCTIONS_PROMPT = r"""You are Grok-4, an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
+IDE_INSTRUCTIONS_PROMPT = r"""You are an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
 
 ## Core Analysis Framework
 
@@ -275,21 +280,45 @@ def process_uploaded_files(
             try:
                 with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
                     for file_info in zip_ref.infolist():
-                        if not file_info.is_dir() and any(file_info.filename.endswith(ext) for ext in SUPPORTED_EXTS):
+                        if file_info.filename.startswith(('/', '\\')) or '..' in file_info.filename.split(os.sep):
+                            warnings.append(f"⚠️ Skipping file with potential path traversal: {file_info.filename}")
+                            continue
+
+                        if file_info.file_size > MAX_FILE_SIZE:
+                            warnings.append(f"⚠️ Skipping large file in ZIP: {file_info.filename} ({file_info.file_size} bytes)")
+                            continue
+
+                        # Sanitize file path to prevent directory traversal
+                        safe_filename = os.path.basename(file_info.filename)
+                        if not safe_filename or safe_filename.startswith('.'):
+                            continue
+                        
+                        if not file_info.is_dir() and any(safe_filename.endswith(ext) for ext in SUPPORTED_EXTS):
                             with zip_ref.open(file_info) as file:
                                 content = file.read()
                                 if len(content) > MAX_FILE_SIZE:
                                     content = content[:MAX_FILE_SIZE]
-                                    warnings.append(f"⚠️ File '{file_info.filename}' truncated to {MAX_FILE_SIZE // 1024**2}MB")
+                                    warnings.append(f"⚠️ File '{safe_filename}' truncated to {MAX_FILE_SIZE // 1024**2}MB")
                                 
                                 try:
                                     decoded_content = content.decode('utf-8')
+                                    
+                                    # Validate content is not empty or just whitespace
+                                    if not decoded_content.strip():
+                                        warnings.append(f"⚠️ File '{safe_filename}' is empty or contains only whitespace. Skipping.")
+                                        continue
+                                    
+                                    # Validate minimum content length (at least 10 characters)
+                                    if len(decoded_content.strip()) < 10:
+                                        warnings.append(f"⚠️ File '{safe_filename}' is too short for meaningful analysis. Skipping.")
+                                        continue
+                                    
                                     code_contents.append({
-                                        'filename': file_info.filename,
+                                        'filename': safe_filename,
                                         'content': decoded_content
                                     })
                                 except UnicodeDecodeError:
-                                    warnings.append(f"⚠️ Could not decode '{file_info.filename}' as UTF-8. Skipping.")
+                                    warnings.append(f"⚠️ Could not decode '{safe_filename}' as UTF-8. Skipping.")
             except zipfile.BadZipFile:
                 warnings.append(f"⚠️ '{uploaded_file.name}' is not a valid ZIP file. Skipping.")
         else:
@@ -302,6 +331,17 @@ def process_uploaded_files(
                 
                 try:
                     decoded_content = content.decode('utf-8')
+                    
+                    # Validate content is not empty or just whitespace
+                    if not decoded_content.strip():
+                        warnings.append(f"⚠️ File '{uploaded_file.name}' is empty or contains only whitespace. Skipping.")
+                        continue
+                    
+                    # Validate minimum content length (at least 10 characters)
+                    if len(decoded_content.strip()) < 10:
+                        warnings.append(f"⚠️ File '{uploaded_file.name}' is too short for meaningful analysis. Skipping.")
+                        continue
+                    
                     code_contents.append({
                         'filename': uploaded_file.name,
                         'content': decoded_content
@@ -326,20 +366,25 @@ def construct_user_prompt(code_contents: List[Dict[str, str]]) -> str:
         prompt_parts.append(f"{'='*20} FILE: {item['filename']} {'='*20}\n\n```\n{item['content']}\n```\n\n")
     return "".join(prompt_parts)
 
-def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: bool = False) -> Generator[str, None, None]:
+def stream_grok_review(
+    api_key: str,
+    user_prompt: str,
+    use_ide_instructions: bool = False,
+    model: str = "x-ai/grok-4",
+) -> Generator[str, None, None]:
     """Stream the Grok review response."""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/your-repo",
-        "X-Title": "Grok-4 Code Review"
+        "X-Title": f"AI Code Review ({model})",
     }
     
     system_prompt = IDE_INSTRUCTIONS_PROMPT if use_ide_instructions else SYSTEM_PROMPT
     
     data = {
-        "model": "x-ai/grok-4",
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -349,12 +394,17 @@ def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: boo
     }
     
     try:
-        response = requests.post(url, headers=headers, json=data, stream=True)
+        response = requests.post(url, headers=headers, json=data, stream=True, timeout=30)
         response.raise_for_status()
         
         for line in response.iter_lines():
             if line:
-                line = line.decode('utf-8')
+                try:
+                    line = line.decode('utf-8')
+                except UnicodeDecodeError:
+                    logging.warning("Failed to decode response line as UTF-8")
+                    continue
+                    
                 if line.startswith('data: '):
                     line = line[6:]  # Remove 'data: ' prefix
                     if line.strip() == '[DONE]':
@@ -365,27 +415,39 @@ def stream_grok_review(api_key: str, user_prompt: str, use_ide_instructions: boo
                             delta = chunk['choices'][0].get('delta', {})
                             if 'content' in delta:
                                 yield delta['content']
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
+                        logging.warning(f"Failed to parse JSON chunk: {e}")
+                        continue
+                    except (KeyError, IndexError) as e:
+                        logging.warning(f"Unexpected response structure: {e}")
                         continue
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
-            yield "Error: Invalid API key. Please check your OpenRouter credentials."
+            yield "❌ **Authentication Error**: Invalid API key. Please verify your OpenRouter credentials at https://openrouter.ai/keys"
         elif e.response.status_code == 429:
-            yield "Error: Rate limit exceeded. Please try again later or check your OpenRouter quota."
+            yield "⏱️ **Rate Limit Exceeded**: Too many requests. Please wait a few minutes or check your OpenRouter quota at https://openrouter.ai/activity"
+        elif e.response.status_code == 402:
+            yield "💳 **Payment Required**: Insufficient credits. Please add credits to your OpenRouter account."
+        elif e.response.status_code == 503:
+            yield "🔧 **Service Unavailable**: The AI model is temporarily unavailable. Please try again in a few minutes."
         else:
-            yield f"HTTP Error: {str(e)}"
+            yield f"❌ **HTTP Error {e.response.status_code}**: {str(e)}\n\nPlease check the OpenRouter status page or try a different model."
+    except requests.exceptions.Timeout:
+        yield "⏱️ **Timeout Error**: The request took too long. Please try again with smaller files or check your internet connection."
+    except requests.exceptions.ConnectionError:
+        yield "🌐 **Connection Error**: Could not connect to OpenRouter. Please check your internet connection."
     except requests.exceptions.RequestException as e:
-        yield f"Network Error: {str(e)}"
+        yield f"❌ **Network Error**: {str(e)}\n\nPlease check your internet connection and try again."
 
 # --- Streamlit App UI ---
-st.set_page_config(layout="wide", page_title="Grok-4 Code Review")
-st.title("🤖 Grok-4 Code Review")
-st.subheader("Powered by Grok via OpenRouter")
+st.set_page_config(layout="wide", page_title="AI Code Review")
+st.title("🤖 AI Code Review")
+st.subheader("Powered by OpenRouter")
 
 with st.expander("About This Tool & How It Works", expanded=True):
     st.write("""
 ## Advanced Code Analysis with a Clear, Actionable Framework
-Upload your code for a comprehensive review by **Grok-4**, a persona designed for meticulous, expert-level analysis.
+Upload your code for a comprehensive review by an expert AI model via **OpenRouter**, designed for meticulous, expert-level analysis.
 
 ### How It Works:
 The AI uses a structured thinking process to analyze your code across multiple dimensions:
@@ -400,12 +462,15 @@ The AI then provides a prioritized list of findings, complete with actionable re
 
 # API Key Input
 api_key = None
+api_key_source = None
 
 # Try to get API key from environment or secrets
 if 'OPENROUTER_API_KEY' in os.environ:
     api_key = os.environ['OPENROUTER_API_KEY']
+    api_key_source = ".env / environment"
 elif hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
     api_key = st.secrets['OPENROUTER_API_KEY']
+    api_key_source = "Streamlit secrets"
 
 if not api_key:
     with st.expander("🔑 OpenRouter API Key Required", expanded=True):
@@ -419,13 +484,29 @@ if not api_key:
         Get your API key from: https://openrouter.ai/keys
         """)
     api_key = st.text_input("Enter your OpenRouter API Key:", type="password")
+    if api_key:
+        api_key_source = "manual input"
 
 if api_key:
-    if not api_key.startswith('sk-or-'):
-        st.error("Invalid OpenRouter API key format. It should start with 'sk-or-'. Please check and try again.")
+    # Validate API key format and length
+    if not api_key.startswith('sk-or-') or len(api_key) < 20:
+        st.error("Invalid OpenRouter API key format. It should start with 'sk-or-' and be at least 20 characters long.")
         st.stop()
     
-    st.success("✅ API Key loaded successfully!")
+    # Test API key validity with a minimal request
+    try:
+        test_response = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5
+        )
+        if test_response.status_code != 200:
+            st.error("API key validation failed. Please check your OpenRouter credentials.")
+            st.stop()
+    except requests.RequestException:
+        st.warning("Could not validate API key (network issue). Proceeding with caution.")
+    
+    st.success(f"✅ API Key loaded and validated successfully ({api_key_source}).")
 
 # File Upload Section
 st.markdown("### 📁 Upload Your Code Files")
@@ -442,8 +523,16 @@ uploaded_files = st.file_uploader(
     type=[ext.lstrip('.') for ext in SUPPORTED_EXTS] + ['zip']
 )
 
-# Review Mode Selection
-st.markdown("### ⚙️ Review Mode")
+MODEL_OPTIONS = [
+    "anthropic/claude-sonnet-4",
+    "x-ai/grok-4",
+    "openai/gpt-5",
+    "moonshotai/kimi-k2:free",
+    "qwen/qwen3-coder:free",
+]
+
+# Review Mode + Model Selection
+st.markdown("### ⚙️ Review Settings")
 col1, col2 = st.columns(2)
 
 with col1:
@@ -454,23 +543,61 @@ with col1:
     )
 
 with col2:
+    selected_model = st.selectbox(
+        "Model:",
+        options=MODEL_OPTIONS,
+        index=MODEL_OPTIONS.index("x-ai/grok-4") if "x-ai/grok-4" in MODEL_OPTIONS else 0,
+        help="Choose which model to run your review on (via OpenRouter).",
+    )
+    st.session_state["selected_model"] = selected_model
     if review_mode == "IDE Implementation Instructions":
         st.info("💡 This mode generates copy-pasteable instructions for IDE AI assistants like Cursor or Trae AI.")
 
-# Initialize session state
-if 'review_complete' not in st.session_state:
-    st.session_state.review_complete = False
-if 'review_result' not in st.session_state:
-    st.session_state.review_result = ""
-if 'user_prompt' not in st.session_state:
-    st.session_state.user_prompt = ""
-# --- FIX: Initialize the new session state key ---
-if 'selected_review_mode' not in st.session_state:
-    st.session_state.selected_review_mode = "Standard Review"
+# Initialize all session state variables
+def initialize_session_state():
+    """Initialize all session state variables with default values."""
+    defaults = {
+        'review_complete': False,
+        'review_result': "",
+        'user_prompt': "",
+        'selected_review_mode': "Standard Review",
+        'selected_model': "x-ai/grok-4",
+        'last_review_time': None
+    }
+    
+    for key, default_value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+# Call initialization
+initialize_session_state()
+
+# Rate limiting
+RATE_LIMIT_SECONDS = 10  # Minimum seconds between reviews
+
+def check_rate_limit():
+    """Check if enough time has passed since last review."""
+    if 'last_review_time' not in st.session_state or st.session_state.last_review_time is None:
+        return True
+    
+    time_since_last = datetime.now() - st.session_state.last_review_time
+    return time_since_last.total_seconds() >= RATE_LIMIT_SECONDS
 
 
 def start_review():
     """Process files and start the review."""
+    # Check rate limiting
+    if not check_rate_limit():
+        if st.session_state.last_review_time is not None:
+            remaining_time = RATE_LIMIT_SECONDS - (datetime.now() - st.session_state.last_review_time).total_seconds()
+            st.error(f"Please wait {remaining_time:.0f} more seconds before starting another review.")
+        else:
+            st.error("Please wait before starting another review.")
+        return
+    
+    # Set the review time
+    st.session_state.last_review_time = datetime.now()
+    
     if not api_key:
         st.error("Please provide an OpenRouter API key.")
         return
@@ -502,19 +629,25 @@ def start_review():
     st.session_state.user_prompt = user_prompt
     # --- FIX: Save the selected review mode to the session state ---
     st.session_state.selected_review_mode = review_mode
+    st.session_state.selected_model = selected_model
     
     # Determine if using IDE instructions mode
     use_ide_instructions = review_mode == "IDE Implementation Instructions"
     
     # Start streaming review
-    with st.spinner("🤖 Grok is analyzing your code..."):
+    with st.spinner("🤖 The model is analyzing your code..."):
         progress_bar = st.progress(0)
         result_container = st.empty()
         
         full_response = ""
         chunk_count = 0
         
-        for chunk in stream_grok_review(api_key, user_prompt, use_ide_instructions):
+        for chunk in stream_grok_review(
+            api_key,
+            user_prompt,
+            use_ide_instructions,
+            model=st.session_state.selected_model,
+        ):
             chunk_count += 1
             full_response += chunk
             
@@ -594,3 +727,9 @@ if st.session_state.review_complete and st.session_state.review_result:
             st.markdown(f"```markdown\n{current_prompt}\n```")
         with st.expander("User Prompt (Your Code)"):
             st.code(st.session_state.user_prompt, language="markdown")
+        with st.expander("Run Configuration"):
+            st.write({
+                "model": st.session_state.get("selected_model", "x-ai/grok-4"),
+                "review_mode": st.session_state.get("selected_review_mode", "Standard Review"),
+                "api_key_source": api_key_source or "unknown",
+            })
