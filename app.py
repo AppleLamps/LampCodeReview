@@ -529,7 +529,6 @@ MODEL_OPTIONS = [
     "openai/gpt-5",
     "moonshotai/kimi-k2:free",
     "qwen/qwen3-coder:free",
-    "anthropic/claude-opus-4.1",
 ]
 
 # Review Mode + Model Selection
