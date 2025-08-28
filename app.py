@@ -524,8 +524,9 @@ uploaded_files = st.file_uploader(
 )
 
 MODEL_OPTIONS = [
-    "anthropic/claude-sonnet-4",
+    "x-ai/grok-code-fast-1",
     "x-ai/grok-4",
+    "anthropic/claude-sonnet-4",
     "openai/gpt-5",
     "moonshotai/kimi-k2:free",
     "qwen/qwen3-coder:free",
