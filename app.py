@@ -526,10 +526,17 @@ uploaded_files = st.file_uploader(
 MODEL_OPTIONS = [
     "x-ai/grok-code-fast-1",
     "x-ai/grok-4",
+    "x-ai/grok-4-fast",
+    "anthropic/claude-sonnet-4.5",
     "anthropic/claude-sonnet-4",
     "openai/gpt-5",
-    "moonshotai/kimi-k2:free",
+    "openai/gpt-5-codex",
+    "z-ai/glm-4.6",
+    "moonshotai/kimi-k2-0905",
+    "google/gemini-2.5-flash-preview-09-2025",
     "qwen/qwen3-coder:free",
+    "deepseek/deepseek-chat-v3.1:free",
+    "tngtech/deepseek-r1t2-chimera:free",
 ]
 
 # Review Mode + Model Selection
