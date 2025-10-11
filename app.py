@@ -8,8 +8,8 @@ import zipfile
 import re
 import logging
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import List, Dict, Generator, Tuple, Any
+from pathlib import Path, PurePosixPath
+from typing import List, Dict, Generator, Tuple, Any, Optional
 
 # --- Constants and Configuration ---
 # Robustly load .env from the app directory (and let python-dotenv auto-discover as fallback)
@@ -23,6 +23,7 @@ SUPPORTED_EXTS = (
     ".h", ".hpp", ".html", ".htm", ".css", ".sql", ".yaml", ".yml", ".json",
     ".xml", ".md", ".sh", ".bat", ".rs", ".ps1"
 )
+SUPPORTED_EXTS_LOWER = tuple(ext.lower() for ext in SUPPORTED_EXTS)
 SYSTEM_PROMPT = r"""You are an expert code reviewer. Your task is to provide a comprehensive and actionable analysis of the provided code.
 
 ## Your Analysis Framework
@@ -62,7 +63,10 @@ A list of all identified issues, ordered by severity from Critical to Low. For e
 - **Recommendation**: Actionable steps and code examples for how to fix it.
 
 ### Positive Aspects
-A brief section highlighting what the code does well, acknowledging good practices and clean implementation."""
+A brief section highlighting what the code does well, acknowledging good practices and clean implementation.
+
+### Review Pipeline Enhancements
+Recommend concrete improvements that would help this application deliver even better AI-assisted reviews in the future. Consider how files are collected and transmitted, the metadata and prompts provided to you, and opportunities to supply richer context or guardrails for future analyses."""
 
 # System prompt for IDE implementation instructions mode
 IDE_INSTRUCTIONS_PROMPT = r"""You are an expert code reviewer specialized in providing step-by-step implementation instructions for IDEs like Cursor or Trae AI.
@@ -219,6 +223,33 @@ Before finalizing each instruction, verify:
 Focus on the most critical issues first (security, bugs, performance) and make each instruction self-contained and actionable. Remember: the user should be able to follow your instructions exactly and get working, improved code."""
 
 # --- Helper Functions ---
+
+
+def is_supported_file(filename: str) -> bool:
+    """Check if the filename uses one of the supported extensions."""
+    lowercase_name = filename.lower()
+    return lowercase_name.endswith(SUPPORTED_EXTS_LOWER)
+
+
+def sanitize_zip_member_path(member_name: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return a safe, normalized path for a ZIP member or an error reason."""
+    normalized = member_name.replace("\\", "/")
+    pure_path = PurePosixPath(normalized)
+
+    if pure_path.is_absolute():
+        return None, "absolute path"
+
+    parts = [part for part in pure_path.parts if part not in ("", ".")]
+    if not parts:
+        return None, "empty or hidden path"
+
+    if any(part == ".." for part in parts):
+        return None, "path traversal"
+
+    safe_path = "/".join(parts)
+    return safe_path, None
+
+
 def process_uploaded_files(
     uploaded_files: List[Any]
 ) -> Tuple[List[Dict[str, str]], List[str]]:
@@ -240,50 +271,58 @@ def process_uploaded_files(
             try:
                 with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
                     for file_info in zip_ref.infolist():
-                        if file_info.filename.startswith(('/', '\\')) or '..' in file_info.filename.split(os.sep):
-                            warnings.append(f"⚠️ Skipping file with potential path traversal: {file_info.filename}")
+                        if file_info.is_dir():
+                            continue
+
+                        safe_filename, error_reason = sanitize_zip_member_path(file_info.filename)
+                        if error_reason:
+                            warnings.append(
+                                f"⚠️ Skipping file '{file_info.filename}' due to {error_reason} risk."
+                            )
                             continue
 
                         if file_info.file_size > MAX_FILE_SIZE:
-                            warnings.append(f"⚠️ Skipping large file in ZIP: {file_info.filename} ({file_info.file_size} bytes)")
+                            warnings.append(
+                                f"⚠️ Skipping large file in ZIP: {safe_filename} ({file_info.file_size} bytes)"
+                            )
                             continue
 
-                        # Sanitize file path to prevent directory traversal
-                        safe_filename = os.path.basename(file_info.filename)
-                        if not safe_filename or safe_filename.startswith('.'):
+                        if not is_supported_file(safe_filename):
                             continue
-                        
-                        if not file_info.is_dir() and any(safe_filename.endswith(ext) for ext in SUPPORTED_EXTS):
-                            with zip_ref.open(file_info) as file:
-                                content = file.read()
-                                if len(content) > MAX_FILE_SIZE:
-                                    content = content[:MAX_FILE_SIZE]
-                                    warnings.append(f"⚠️ File '{safe_filename}' truncated to {MAX_FILE_SIZE // 1024**2}MB")
-                                
-                                try:
-                                    decoded_content = content.decode('utf-8')
-                                    
-                                    # Validate content is not empty or just whitespace
-                                    if not decoded_content.strip():
-                                        warnings.append(f"⚠️ File '{safe_filename}' is empty or contains only whitespace. Skipping.")
-                                        continue
-                                    
-                                    # Validate minimum content length (at least 10 characters)
-                                    if len(decoded_content.strip()) < 10:
-                                        warnings.append(f"⚠️ File '{safe_filename}' is too short for meaningful analysis. Skipping.")
-                                        continue
-                                    
-                                    code_contents.append({
-                                        'filename': safe_filename,
-                                        'content': decoded_content
-                                    })
-                                except UnicodeDecodeError:
-                                    warnings.append(f"⚠️ Could not decode '{safe_filename}' as UTF-8. Skipping.")
+
+                        if safe_filename.startswith('.'):
+                            continue
+
+                        with zip_ref.open(file_info) as file:
+                            content = file.read()
+                            if len(content) > MAX_FILE_SIZE:
+                                content = content[:MAX_FILE_SIZE]
+                                warnings.append(f"⚠️ File '{safe_filename}' truncated to {MAX_FILE_SIZE // 1024**2}MB")
+
+                            try:
+                                decoded_content = content.decode('utf-8')
+
+                                # Validate content is not empty or just whitespace
+                                if not decoded_content.strip():
+                                    warnings.append(f"⚠️ File '{safe_filename}' is empty or contains only whitespace. Skipping.")
+                                    continue
+
+                                # Validate minimum content length (at least 10 characters)
+                                if len(decoded_content.strip()) < 10:
+                                    warnings.append(f"⚠️ File '{safe_filename}' is too short for meaningful analysis. Skipping.")
+                                    continue
+
+                                code_contents.append({
+                                    'filename': safe_filename,
+                                    'content': decoded_content
+                                })
+                            except UnicodeDecodeError:
+                                warnings.append(f"⚠️ Could not decode '{safe_filename}' as UTF-8. Skipping.")
             except zipfile.BadZipFile:
                 warnings.append(f"⚠️ '{uploaded_file.name}' is not a valid ZIP file. Skipping.")
         else:
             # Handle individual files
-            if any(uploaded_file.name.endswith(ext) for ext in SUPPORTED_EXTS):
+            if is_supported_file(uploaded_file.name):
                 content = uploaded_file.read()
                 if len(content) > MAX_FILE_SIZE:
                     content = content[:MAX_FILE_SIZE]
@@ -313,9 +352,31 @@ def process_uploaded_files(
     
     return code_contents, warnings
 
-def construct_user_prompt(code_contents: List[Dict[str, str]]) -> str:
-    # Start with file list for clarity
-    prompt_parts = ["Please review the following code files:\n\n"]
+def construct_user_prompt(
+    code_contents: List[Dict[str, str]],
+    warnings: Optional[List[str]] = None,
+    review_context: Optional[Dict[str, str]] = None
+) -> str:
+    # Start with review context so the model knows what to prioritize
+    prompt_parts = []
+
+    if review_context:
+        prompt_parts.append("## Review Request Context\n")
+        for label, value in review_context.items():
+            prompt_parts.append(f"- {label}: {value}\n")
+        prompt_parts.append("\n")
+
+    prompt_parts.append(
+        "Please evaluate the provided application code and point out both code-level issues and opportunities to make the AI code review workflow itself more effective. Consider how files are processed before they are sent to you, how the API payload is constructed, and how prompts could better guide future reviews.\n\n"
+    )
+
+    # Include any warnings about file handling so the reviewer knows about skipped/truncated files
+    if warnings:
+        prompt_parts.append("## Upload Warnings Observed\n")
+        for warning in warnings:
+            prompt_parts.append(f"- {warning}\n")
+        prompt_parts.append("\n")
+
     prompt_parts.append("FILES TO ANALYZE:\n")
     for i, item in enumerate(code_contents, 1):
         prompt_parts.append(f"{i}. {item['filename']}\n")
@@ -530,7 +591,8 @@ def initialize_session_state():
         'user_prompt': "",
         'selected_review_mode': "Standard Review",
         'selected_model': "x-ai/grok-4",
-        'last_review_time': None
+        'last_review_time': None,
+        'upload_warnings': []
     }
     
     for key, default_value in defaults.items():
@@ -593,7 +655,22 @@ def start_review():
             st.write(f"{i}. **{item['filename']}** ({len(item['content']):,} characters)")
     
     # Construct user prompt
-    user_prompt = construct_user_prompt(code_contents)
+    st.session_state.upload_warnings = warnings
+
+    review_context = {
+        "Review mode": review_mode,
+        "Selected model": selected_model,
+        "Requested focus": (
+            "Identify improvements to this application's code review pipeline, "
+            "file handling, and prompting strategy while addressing code-level issues."
+        ),
+    }
+
+    user_prompt = construct_user_prompt(
+        code_contents,
+        warnings=warnings,
+        review_context=review_context
+    )
     st.session_state.user_prompt = user_prompt
     # --- FIX: Save the selected review mode to the session state ---
     st.session_state.selected_review_mode = review_mode
@@ -700,4 +777,5 @@ if st.session_state.review_complete and st.session_state.review_result:
                 "model": st.session_state.get("selected_model", "x-ai/grok-4"),
                 "review_mode": st.session_state.get("selected_review_mode", "Standard Review"),
                 "api_key_source": api_key_source or "unknown",
+                "upload_warnings": st.session_state.get("upload_warnings", []),
             })
