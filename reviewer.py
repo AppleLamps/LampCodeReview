@@ -6,7 +6,8 @@ import os
 from typing import Generator, Tuple, Optional
 from datetime import datetime
 from pathlib import Path
-from config import SYSTEM_PROMPT, IDE_INSTRUCTIONS_PROMPT
+from config import SYSTEM_PROMPT, IDE_INSTRUCTIONS_PROMPT, REFACTOR_SYSTEM_PROMPT
+from openrouter_client import stream_chat
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ def stream_grok_review(
     use_ide_instructions: bool = False,
     model: str = "x-ai/grok-4",
     file_count: int = 0,
+    review_mode: str = "Standard Review",
 ) -> Generator[str, None, None]:
     """Stream the Grok review response with request validation and logging."""
     # Generate request ID for tracking
@@ -119,60 +121,22 @@ def stream_grok_review(
     # Show request ID for diagnostics
     yield f"*Request ID: `{request_id}`*\n\n"
     
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/your-repo",
-        "X-Title": f"AI Code Review ({model})",
-    }
-
-    system_prompt = IDE_INSTRUCTIONS_PROMPT if use_ide_instructions else SYSTEM_PROMPT
-
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "stream": True,
-        "temperature": 0.1
-    }
+    if use_ide_instructions or review_mode == "IDE Implementation Instructions":
+        system_prompt = IDE_INSTRUCTIONS_PROMPT
+    elif review_mode == "Refactor":
+        system_prompt = REFACTOR_SYSTEM_PROMPT
+    else:
+        system_prompt = SYSTEM_PROMPT
 
     try:
-        response = requests.post(url, headers=headers, json=data, stream=True, timeout=30)
-        response.raise_for_status()
-
-        chunk_count = 0
-        for line in response.iter_lines():
-            try:
-                if line:
-                    try:
-                        line = line.decode('utf-8')
-                    except UnicodeDecodeError as e:
-                        logger.warning(f"Failed to decode response line as UTF-8: {e}")
-                        continue
-
-                    if line.startswith('data: '):
-                        line = line[6:]  # Remove 'data: ' prefix
-                        if line.strip() == '[DONE]':
-                            break
-                        try:
-                            chunk = json.loads(line)
-                            if 'choices' in chunk and len(chunk['choices']) > 0:
-                                delta = chunk['choices'][0].get('delta', {})
-                                if 'content' in delta:
-                                    chunk_count += 1
-                                    yield delta['content']
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse JSON chunk: {e}")
-                            continue
-                        except (KeyError, IndexError, TypeError) as e:
-                            logger.warning(f"Unexpected response structure: {e}")
-                            continue
-            except Exception as e:
-                logger.error(f"Error processing stream line: {e}")
-                continue
+        for content in stream_chat(
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout=30,
+        ):
+            yield content
     except requests.exceptions.HTTPError as e:
         error_code = e.response.status_code
         try:

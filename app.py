@@ -11,8 +11,8 @@ from config import (
     MAX_TOTAL_SIZE, MAX_FILE_SIZE, SUPPORTED_EXTS, MODEL_OPTIONS, RATE_LIMIT_SECONDS,
     SYSTEM_PROMPT, IDE_INSTRUCTIONS_PROMPT
 )
-from utils import process_uploaded_files, construct_user_prompt
-from reviewer import stream_grok_review, validate_and_estimate_tokens
+from review_service import prepare_review
+from reviewer import stream_grok_review
 
 
 def display_about_section():
@@ -112,8 +112,8 @@ def handle_review_settings():
     with col1:
         review_mode = st.radio(
             "Select review mode:",
-            ["Standard Review", "IDE Implementation Instructions"],
-            help="Standard: Comprehensive analysis. IDE: Step-by-step instructions for Cursor/Trae AI."
+            ["Standard Review", "Refactor", "IDE Implementation Instructions"],
+            help="Standard: Comprehensive analysis. Refactor: Focus on modularization and cleanup. IDE: Step-by-step instructions for Cursor/Trae AI."
         )
 
     with col2:
@@ -126,6 +126,8 @@ def handle_review_settings():
         st.session_state["selected_model"] = selected_model
         if review_mode == "IDE Implementation Instructions":
             st.info("💡 This mode generates copy-pasteable instructions for IDE AI assistants like Cursor or Trae AI.")
+        elif review_mode == "Refactor":
+            st.info("🧩 Refactor mode focuses on identifying files and modules to refactor, improve cohesion, reduce coupling, and propose modular structure without changing behavior.")
 
     return review_mode, selected_model
 
@@ -178,47 +180,37 @@ def start_review(api_key, uploaded_files, review_mode, selected_model):
         st.error("Please upload at least one file.")
         return
     
-    # Process uploaded files
+    # Prepare review: process files, build prompt, and validate
     with st.spinner("Processing uploaded files..."):
-        code_contents, warnings = process_uploaded_files(uploaded_files)
-    
+        code_contents, warnings, user_prompt, validation = prepare_review(
+            uploaded_files=uploaded_files,
+            review_mode=review_mode,
+            selected_model=selected_model,
+        )
+
+    # Show any warnings from processing
     if warnings:
         for warning in warnings:
             st.warning(warning)
-    
+
     if not code_contents:
         st.error("No valid code files found. Please check file extensions and content.")
         return
-    
+
     # Display debug information about uploaded files
     st.success(f"✅ Successfully processed {len(code_contents)} file(s)")
     with st.expander("📋 Files being sent to AI", expanded=False):
         for i, item in enumerate(code_contents, 1):
             st.write(f"{i}. **{item['filename']}** ({len(item['content']):,} characters)")
-    
-    # Construct user prompt
+
+    # Persist session state
     st.session_state.upload_warnings = warnings
-
-    review_context = {
-        "Review mode": review_mode,
-        "Selected model": selected_model,
-        "Requested focus": (
-            "Identify improvements to this application's code review pipeline, "
-            "file handling, and prompting strategy while addressing code-level issues."
-        ),
-    }
-
-    user_prompt = construct_user_prompt(
-        code_contents,
-        warnings=warnings,
-        review_context=review_context
-    )
     st.session_state.user_prompt = user_prompt
     st.session_state.selected_review_mode = review_mode
     st.session_state.selected_model = selected_model
-    
+
     # Validate request size and show token estimate
-    is_valid, size_message, estimated_tokens = validate_and_estimate_tokens(user_prompt)
+    is_valid, size_message, estimated_tokens = validation
     
     with st.expander("📊 Request Details", expanded=True):
         col1, col2, col3 = st.columns(3)
@@ -252,6 +244,7 @@ def start_review(api_key, uploaded_files, review_mode, selected_model):
             use_ide_instructions,
             model=st.session_state.selected_model,
             file_count=len(code_contents),
+            review_mode=review_mode,
         ):
             chunk_count += 1
             full_response += chunk
@@ -324,9 +317,15 @@ def display_results():
         
         with tab3:
             with st.expander("System Prompt (The AI's Instructions)"):
-                # --- FIX: Read the review mode from session state ---
+                # Read the review mode from session state to select prompt
                 mode_used = st.session_state.get("selected_review_mode")
-                current_prompt = IDE_INSTRUCTIONS_PROMPT if mode_used == "IDE Implementation Instructions" else SYSTEM_PROMPT
+                if mode_used == "IDE Implementation Instructions":
+                    current_prompt = IDE_INSTRUCTIONS_PROMPT
+                elif mode_used == "Refactor":
+                    from config import REFACTOR_SYSTEM_PROMPT  # local import to avoid top-level cycle
+                    current_prompt = REFACTOR_SYSTEM_PROMPT
+                else:
+                    current_prompt = SYSTEM_PROMPT
                 st.markdown(f"```markdown\n{current_prompt}\n```")
             with st.expander("User Prompt (Your Code)"):
                 st.code(st.session_state.user_prompt, language="markdown")
