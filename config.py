@@ -19,6 +19,7 @@ MODEL_OPTIONS = [
     "x-ai/grok-code-fast-1",
     "x-ai/grok-4",
     "x-ai/grok-4-fast",
+    "google/gemini-2.5-pro",
     "anthropic/claude-sonnet-4.5",
     "anthropic/claude-sonnet-4",
     "openai/gpt-5",
