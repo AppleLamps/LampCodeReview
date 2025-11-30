@@ -17,22 +17,22 @@ SUPPORTED_EXTS_SET = frozenset(ext.lower() for ext in SUPPORTED_EXTS)  # O(1) lo
 
 MODEL_OPTIONS = [
     "x-ai/grok-code-fast-1",
+    "x-ai/grok-4.1-fast:free",
     "x-ai/grok-4",
     "x-ai/grok-4-fast",
-    "google/gemini-2.5-pro",
-    "anthropic/claude-opus-4.5",
+    "openai/gpt-5.1",
+    "openai/gpt-5.1-codex",
+    "openai/gpt-5.1-codex-mini",
     "google/gemini-3-pro-preview",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash-preview-09-2025",
+    "anthropic/claude-opus-4.5",
     "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-haiku-4.5",
     "anthropic/claude-sonnet-4",
-    "openai/gpt-5",
-    "openai/gpt-5-codex",
     "z-ai/glm-4.6",
     "moonshotai/kimi-k2-0905",
-    "google/gemini-2.5-flash-preview-09-2025",
-    "qwen/qwen3-coder:free",
-    "minimax/minimax-m2:free",
-    "baidu/ernie-4.5-21b-a3b-thinking",
-    "anthropic/claude-haiku-4.5",
+    "kwaipilot/kat-coder-pro",
 ]
 
 RATE_LIMIT_SECONDS = 10  # Minimum seconds between reviews
