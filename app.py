@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import os
 import time
 import re
 import logging
@@ -13,7 +12,7 @@ from config import (
 )
 from review_service import prepare_review
 from reviewer import stream_grok_review, StreamCancellationToken
-from openrouter_client import validate_and_estimate_tokens, estimate_cost
+from openrouter_client import validate_and_estimate_tokens, estimate_cost, fetch_available_models
 
 
 def display_about_section():
@@ -36,12 +35,11 @@ The AI then provides a prioritized list of findings, complete with actionable re
 
 
 def handle_api_key():
-    """Handle API key retrieval and validation.
+    """Handle API key entry and validation.
 
-    The key may come from the environment, Streamlit secrets, or a manual
-    entry field. Manual entries are persisted in ``st.session_state`` so the
-    key survives reruns (e.g. when the user clicks "Analyze Code" or the app
-    refreshes), letting each user supply their own key.
+    Users must enter their own OpenRouter API key. The key is stored
+    in ``st.session_state`` so it survives reruns but is never written
+    to disk and is lost when the browser session ends.
     """
     if "api_key_source" not in st.session_state:
         st.session_state.api_key_source = None
@@ -49,14 +47,7 @@ def handle_api_key():
     api_key = None
     api_key_source = None
 
-    # Try to get API key from environment or secrets
-    if 'OPENROUTER_API_KEY' in os.environ:
-        api_key = os.environ['OPENROUTER_API_KEY']
-        api_key_source = ".env / environment"
-    elif hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
-        api_key = st.secrets['OPENROUTER_API_KEY']
-        api_key_source = "Streamlit secrets"
-    elif st.session_state.get("manual_api_key"):
+    if st.session_state.get("manual_api_key"):
         # Reuse a key previously entered this session
         api_key = st.session_state.manual_api_key
         api_key_source = "manual input"
@@ -64,12 +55,9 @@ def handle_api_key():
     if not api_key:
         with st.expander("🔑 OpenRouter API Key Required", expanded=True):
             st.info("""
-        To use this tool, you need an OpenRouter API key. You can:
-        
-        1. **Add to .env file**: `OPENROUTER_API_KEY=your_key_here`
-        2. **Add to Streamlit secrets**: Create `.streamlit/secrets.toml` with your key
-        3. **Enter manually**: Use the input field below — your key stays in this session only
-        
+        To use this tool, you need an OpenRouter API key. Your key is used only
+        for this session and is never stored on disk.
+
         Get your API key from: https://openrouter.ai/keys
         """)
             api_key = st.text_input(
@@ -101,14 +89,14 @@ def handle_api_key():
         if not api_key.startswith('sk-or-') or len(api_key) < 20:
             st.error("Invalid OpenRouter API key format. It should start with 'sk-or-' and be at least 20 characters long.")
             st.stop()
-        
+
         # Only ping OpenRouter once per distinct key to avoid redundant network calls
         if st.session_state.get("validated_api_key") != api_key:
             try:
                 test_response = requests.get(
                     "https://openrouter.ai/api/v1/models",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=5
+                    timeout=10
                 )
                 if test_response.status_code != 200:
                     st.error("API key validation failed. Please check your OpenRouter credentials.")
@@ -117,7 +105,13 @@ def handle_api_key():
             except requests.RequestException:
                 st.warning("Could not validate API key (network issue). Proceeding with caution.")
                 st.session_state.validated_api_key = api_key
-        
+
+        # Fetch available models whenever we have a fresh or newly-validated key
+        if st.session_state.get("available_models_key") != api_key:
+            with st.spinner("Loading available models from OpenRouter..."):
+                st.session_state.available_models = fetch_available_models(api_key)
+                st.session_state.available_models_key = api_key
+
         st.success(f"✅ API Key loaded and validated successfully ({api_key_source}).")
 
     return api_key, api_key_source
@@ -154,10 +148,14 @@ def handle_review_settings():
         )
 
     with col2:
+        available_models = st.session_state.get("available_models", MODEL_OPTIONS)
+        default_index = 0
+        if "x-ai/grok-4" in available_models:
+            default_index = available_models.index("x-ai/grok-4")
         selected_model = st.selectbox(
             "Model:",
-            options=MODEL_OPTIONS,
-            index=MODEL_OPTIONS.index("x-ai/grok-4") if "x-ai/grok-4" in MODEL_OPTIONS else 0,
+            options=available_models,
+            index=default_index,
             help="Choose which model to run your review on (via OpenRouter).",
         )
         st.session_state["selected_model"] = selected_model
@@ -178,7 +176,8 @@ def initialize_session_state():
         'selected_review_mode': "Standard Review",
         'selected_model': "x-ai/grok-4",
         'last_review_time': None,
-        'upload_warnings': []
+        'upload_warnings': [],
+        'available_models': MODEL_OPTIONS,
     }
     
     for key, default_value in defaults.items():

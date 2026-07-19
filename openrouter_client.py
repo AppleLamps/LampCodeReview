@@ -1,14 +1,16 @@
 import json
 import logging
-from typing import Generator, Dict, Any
+from typing import Generator, Dict, Any, List
 
 import requests
+
+from config import MODEL_TOKEN_RATIOS, MODEL_OPTIONS
 
 logger = logging.getLogger(__name__)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Token estimation: roughly 0.25 tokens per character for code
+# Token estimation: roughly 0.25 tokens per character for code (generic fallback)
 ESTIMATED_TOKENS_PER_CHAR = 0.25
 MAX_REQUEST_TOKENS = 200000
 
@@ -69,10 +71,10 @@ def stream_chat(
                 continue
 
 
-def validate_and_estimate_tokens(user_prompt: str, system_prompt: str = "") -> Dict[str, Any]:
+def validate_and_estimate_tokens(user_prompt: str, system_prompt: str = "", model: str = "") -> Dict[str, Any]:
     """
     Validate request size and estimate token count.
-    
+
     Returns: dict with validation result, token estimates, and warnings
     """
     if not user_prompt:
@@ -82,9 +84,10 @@ def validate_and_estimate_tokens(user_prompt: str, system_prompt: str = "") -> D
             "estimated_tokens": 0,
             "warning": None,
         }
-    
+
     total_chars = len(user_prompt) + len(system_prompt)
-    estimated_tokens = int(total_chars * ESTIMATED_TOKENS_PER_CHAR)
+    ratio = _get_token_ratio(model)
+    estimated_tokens = int(total_chars * ratio)
     
     if estimated_tokens > MAX_REQUEST_TOKENS:
         return {
@@ -129,3 +132,38 @@ def estimate_cost(tokens: int, model: str) -> float:
             break
     
     return (tokens / 1000) * cost_per_1k
+
+
+def _get_token_ratio(model: str) -> float:
+    """Get the tokens-per-character ratio for a given model family."""
+    model_lower = model.lower()
+    for prefix, ratio in MODEL_TOKEN_RATIOS.items():
+        if prefix in model_lower:
+            return ratio
+    return MODEL_TOKEN_RATIOS.get("default", ESTIMATED_TOKENS_PER_CHAR)
+
+
+def fetch_available_models(api_key: str) -> List[str]:
+    """Fetch the list of available model IDs from OpenRouter.
+
+    Returns a sorted, deduplicated list of model IDs. Falls back to the
+    static MODEL_OPTIONS list if the API call fails.
+    """
+    try:
+        response = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        models = sorted(set(
+            m["id"] for m in data.get("data", [])
+            if m.get("id") and isinstance(m.get("id"), str)
+        ))
+        if models:
+            return models
+    except Exception as e:
+        logger.warning(f"Failed to fetch models from OpenRouter: {e}")
+
+    return sorted(MODEL_OPTIONS)

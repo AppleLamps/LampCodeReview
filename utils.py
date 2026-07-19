@@ -4,7 +4,11 @@ import re
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import List, Dict, Tuple, Any, Optional, Set
-from config import SUPPORTED_EXTS_SET, MAX_TOTAL_SIZE, MAX_FILE_SIZE
+from config import (
+    SUPPORTED_EXTS_SET, MAX_TOTAL_SIZE, MAX_FILE_SIZE,
+    MAX_DECOMPRESSION_RATIO, BINARY_RATIO_THRESHOLD,
+    SUMMARY_MODE_HEAD_CHARS, SUMMARY_MODE_TAIL_CHARS,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -53,29 +57,82 @@ def sanitize_zip_member_path(member_name: str) -> Tuple[Optional[str], Optional[
         return None, "invalid path"
 
 
-def _decode_and_validate_content(raw_content: bytes, filename: str, warnings: List[str]) -> Optional[str]:
-    """Decode and validate file content. Returns decoded content or None if invalid."""
+def _decoded_length(raw_content: bytes) -> int:
+    """Count the length of the decoded string without loading all of it."""
     try:
-        decoded_content = raw_content.decode('utf-8')
-    except UnicodeDecodeError as e:
-        logger.debug(f"UTF-8 decode error for '{filename}': {e}")
-        warnings.append(f"⚠️ Could not decode '{filename}' as UTF-8. Skipping.")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error decoding '{filename}': {e}")
-        warnings.append(f"⚠️ Error processing '{filename}'. Skipping.")
-        return None
+        return len(raw_content.decode('utf-8'))
+    except UnicodeDecodeError:
+        return len(raw_content.decode('utf-8', errors='replace'))
+
+
+def _safe_truncate_bytes(raw_content: bytes, max_bytes: int, encoding: str = 'utf-8') -> bytes:
+    """Truncate raw bytes at a valid character boundary for the given encoding."""
+    if len(raw_content) <= max_bytes:
+        return raw_content
+    truncated = raw_content[:max_bytes]
+    if encoding.lower().replace('-', '').replace('_', '') in ('utf8', 'utf16', 'utf32'):
+        while max_bytes > 0:
+            try:
+                truncated.decode(encoding)
+                break
+            except UnicodeDecodeError as e:
+                if e.start is not None and e.start < max_bytes:
+                    max_bytes = e.start
+                    truncated = raw_content[:max_bytes]
+                else:
+                    max_bytes -= 1
+                    truncated = raw_content[:max_bytes]
+    return truncated
+
+
+def _decode_and_validate_content(raw_content: bytes, filename: str, warnings: List[str], max_chars: Optional[int] = None) -> Optional[str]:
+    """Decode and validate file content. Returns decoded content or None if invalid.
+
+    Tries a cascade of encodings: UTF-8 (with BOM stripped), UTF-8, latin-1,
+    cp1252, and falls back to UTF-8 with replacement characters.
+    Rejects files that appear to be binary (high ratio of non-printable chars).
+    """
+    # Strip BOM
+    if raw_content.startswith(b'\xef\xbb\xbf'):
+        raw_content = raw_content[3:]
+
+    decoded_content = None
+    encoding_used = None
+
+    for encoding in ['utf-8', 'latin-1', 'cp1252']:
+        try:
+            decoded_content = raw_content.decode(encoding)
+            encoding_used = encoding
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if decoded_content is None:
+        decoded_content = raw_content.decode('utf-8', errors='replace')
+        encoding_used = 'utf-8 (with replacement chars)'
+        warnings.append(f"⚠️ '{filename}' decoded with replacement characters. Review may be unreliable.")
+
+    # Reject binary files
+    if len(decoded_content) > 0:
+        non_printable = sum(1 for c in decoded_content if ord(c) < 32 and c not in '\n\r\t')
+        ratio = non_printable / len(decoded_content)
+        if ratio > BINARY_RATIO_THRESHOLD:
+            warnings.append(f"⚠️ '{filename}' appears to be binary ({ratio:.0%} non-printable). Skipping.")
+            return None
 
     stripped = decoded_content.strip()
-    
+
     if not stripped:
         warnings.append(f"⚠️ File '{filename}' is empty or contains only whitespace. Skipping.")
         return None
-    
+
     if len(stripped) < 10:
         warnings.append(f"⚠️ File '{filename}' is too short for meaningful analysis. Skipping.")
         return None
-    
+
+    if max_chars is not None and len(decoded_content) > max_chars:
+        decoded_content = decoded_content[:max_chars]
+
     return decoded_content
 
 
@@ -100,6 +157,17 @@ def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], w
                     if not safe_filename:
                         continue
 
+                    # Reject suspicious compression ratios (ZIP bomb)
+                    if file_info.file_size > 0 and file_info.compress_size > 0:
+                        ratio = file_info.file_size / file_info.compress_size
+                        if ratio > MAX_DECOMPRESSION_RATIO:
+                            warnings.append(f"⚠️ Skipping potential ZIP bomb: {safe_filename} (ratio {ratio:.0f}:1)")
+                            upload_metadata['skipped_files'].append({
+                                'name': safe_filename,
+                                'reason': 'zip_bomb_suspected'
+                            })
+                            continue
+
                     if file_info.file_size > max_file_size:
                         warnings.append(f"⚠️ Skipping large file in ZIP: {safe_filename} ({file_info.file_size} bytes)")
                         upload_metadata['skipped_files'].append({
@@ -108,7 +176,11 @@ def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], w
                         })
                         continue
 
-                    if not is_supported_file(safe_filename) or safe_filename.startswith('.'):
+                    # Filter dot-directories (e.g. .git/) and unsupported files
+                    path_parts = safe_filename.split('/')
+                    if (not is_supported_file(safe_filename)
+                            or safe_filename.startswith('.')
+                            or any(part.startswith('.') and part not in ('.', '..') for part in path_parts)):
                         continue
 
                     try:
@@ -118,9 +190,9 @@ def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], w
                         logger.warning(f"Failed to read '{safe_filename}' from ZIP: {e}")
                         warnings.append(f"⚠️ Could not read '{safe_filename}' from ZIP. Skipping.")
                         continue
-                    
+
                     if len(content) > max_file_size:
-                        content = content[:max_file_size]
+                        content = _safe_truncate_bytes(content, max_file_size)
                         warnings.append(f"⚠️ File '{safe_filename}' truncated to {max_file_size // 1024**2}MB")
                         upload_metadata['truncated_files'].append(safe_filename)
 
@@ -162,9 +234,9 @@ def _process_regular_file(uploaded_file: Any, code_contents: List[Dict[str, str]
                 'reason': 'read_error'
             })
             return
-        
+
         if len(content) > max_file_size:
-            content = content[:max_file_size]
+            content = _safe_truncate_bytes(content, max_file_size)
             warnings.append(f"⚠️ File '{uploaded_file.name}' truncated to {max_file_size // 1024**2}MB")
             upload_metadata['truncated_files'].append(uploaded_file.name)
 
@@ -189,8 +261,9 @@ def process_uploaded_files(
     """Process uploaded files and return code contents and warnings."""
     code_contents = []
     warnings = []
-    total_size = 0
-    
+    seen_names: set = set()
+    total_bytes_read = 0
+
     # Track upload metadata for context
     upload_metadata = {
         'timestamp': datetime.now().isoformat(),
@@ -207,7 +280,17 @@ def process_uploaded_files(
     try:
         for uploaded_file in uploaded_files:
             try:
-                file_size = getattr(uploaded_file, 'size', 0)
+                file_size = getattr(uploaded_file, 'size', None)
+                if file_size is None:
+                    # Fall back to reading the file to determine size
+                    try:
+                        uploaded_file.seek(0)
+                        content_sample = uploaded_file.read()
+                        file_size = len(content_sample)
+                        uploaded_file.seek(0)
+                    except Exception:
+                        file_size = 0
+
                 if file_size <= 0:
                     logger.warning(f"Skipping file with invalid size: {uploaded_file.name}")
                     warnings.append(f"⚠️ File '{uploaded_file.name}' has invalid size. Skipping.")
@@ -216,18 +299,34 @@ def process_uploaded_files(
                         'reason': 'invalid_size'
                     })
                     continue
-                
-                total_size += file_size
-                upload_metadata['total_size'] = total_size
 
-                if total_size > MAX_TOTAL_SIZE:
+                if total_bytes_read + file_size > MAX_TOTAL_SIZE:
                     warnings.append(f"⚠️ Total upload size exceeded {MAX_TOTAL_SIZE // 1024**2}MB. Skipping remaining files.")
                     break
+
+                # Deduplicate by basename
+                base_name = uploaded_file.name.rsplit('/', 1)[-1].rsplit('\\', 1)[-1]
+                if base_name in seen_names:
+                    warnings.append(f"⚠️ Duplicate filename '{base_name}'. Skipping duplicate.")
+                    upload_metadata['skipped_files'].append({
+                        'name': base_name,
+                        'reason': 'duplicate_filename'
+                    })
+                    continue
+
+                prefix_count = len(code_contents)
 
                 if uploaded_file.name.lower().endswith('.zip'):
                     _process_zip_file(uploaded_file, code_contents, warnings, MAX_FILE_SIZE, upload_metadata)
                 else:
                     _process_regular_file(uploaded_file, code_contents, warnings, MAX_FILE_SIZE, upload_metadata)
+
+                # Only accumulate size for files that were successfully decoded
+                newly_added = len(code_contents) - prefix_count
+                if newly_added > 0:
+                    seen_names.add(base_name)
+                    total_bytes_read += file_size
+                    upload_metadata['total_size'] = total_bytes_read
             except Exception as e:
                 logger.error(f"Error processing file '{getattr(uploaded_file, 'name', 'unknown')}': {e}")
                 warnings.append(f"⚠️ Error processing '{getattr(uploaded_file, 'name', 'unknown')}'. Skipping.")
@@ -333,6 +432,8 @@ def detect_dependencies(code_contents: List[Dict[str, str]]) -> List[Dict[str, s
     visited = set()
     visiting = set()
 
+    filename_to_item = {item['filename']: item for item in code_contents}
+
     def visit(filename: str) -> None:
         if filename in visited:
             return
@@ -353,10 +454,9 @@ def detect_dependencies(code_contents: List[Dict[str, str]]) -> List[Dict[str, s
 
         visiting.discard(filename)
         visited.add(filename)
-        for item in code_contents:
-            if item['filename'] == filename and item not in ordered:
-                ordered.append(item)
-                break
+        item = filename_to_item.get(filename)
+        if item is not None and item not in ordered:
+            ordered.append(item)
 
     for item in code_contents:
         visit(item['filename'])
@@ -608,55 +708,78 @@ def detect_project_context(code_contents: List[Dict[str, str]]) -> Dict[str, Any
     return context
 
 
+def _base_name_for_priority(filename: str) -> str:
+    """Extract the basename without directory and convert to lowercase."""
+    return filename.rsplit('/', 1)[-1].rsplit('\\', 1)[-1].lower()
+
+
 def prioritize_files(code_contents: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """Prioritize files based on importance for review."""
     if not code_contents:
         return []
-    
-    # Priority scoring
+
+    # Exact basename sets for priority scoring
+    entry_points = {'main.py', 'app.py', 'index.js', 'server.js', 'run.py', 'manage.py'}
+    config_files = {'config.py', 'settings.py', 'package.json', 'requirements.txt'}
+    core_files = {'models.py', 'views.py', 'controllers.py', 'services.py', 'utils.py'}
+    security_files = {'auth.py', 'security.py', 'permissions.py', 'middleware.py'}
+    test_indicators = ('test_', '_test', '.spec.', '.test.')
+
     priority_scores = []
-    
+
     for item in code_contents:
         filename = item['filename']
+        base = _base_name_for_priority(filename)
+
         score = 0
-        
+
         # Entry points get highest priority
-        entry_points = ['main.py', 'app.py', 'index.js', 'server.js', 'run.py', 'manage.py']
-        if any(ep in filename.lower() for ep in entry_points):
+        if base in entry_points:
             score += 100
-        
+
         # Config files
-        config_files = ['config.py', 'settings.py', 'package.json', 'requirements.txt']
-        if any(cf in filename.lower() for cf in config_files):
+        if base in config_files:
             score += 80
-        
+
         # Core business logic
-        core_patterns = ['models.py', 'views.py', 'controllers.py', 'services.py', 'utils.py']
-        if any(cp in filename.lower() for cp in core_patterns):
+        if base in core_files:
             score += 60
-        
+
         # Security/auth files
-        security_patterns = ['auth.py', 'security.py', 'permissions.py', 'middleware.py']
-        if any(sp in filename.lower() for sp in security_patterns):
+        if base in security_files:
             score += 70
-        
+
         # Test files (lower priority but still important)
-        if any(test in filename.lower() for test in ['test_', '_test', '.spec.', '.test.']):
+        if any(indicator in base for indicator in test_indicators):
             score += 40
-        
+
         # File size consideration (very large files might be less critical)
         content_length = len(item['content'])
-        if content_length > 5000:  # Large files
+        if content_length > 5000:
             score -= 10
-        elif content_length < 100:  # Very small files
+        elif content_length < 100:
             score -= 5
-        
+
         priority_scores.append((score, item))
-    
+
     # Sort by priority score (descending)
     priority_scores.sort(key=lambda x: x[0], reverse=True)
-    
+
     return [item for score, item in priority_scores]
+
+
+def _sanitize_for_prompt(text: str) -> str:
+    """Sanitize a string for safe inclusion in an LLM prompt."""
+    sanitized = ''.join(c for c in text if c.isprintable() or c in '\n\r\t')
+    sanitized = sanitized.replace('`', "'")
+    return sanitized
+
+
+def _prompt_fence(content: str) -> str:
+    """Return a markdown code fence that won't conflict with file content."""
+    if '```' in content:
+        return '````'
+    return '```'
 
 
 def construct_user_prompt(
@@ -677,6 +800,10 @@ def construct_user_prompt(
         max_file_chars: Per-file character cap (after summary_mode truncation).
     """
     prompt_parts = []
+
+    # Normalize all path separators to forward slashes
+    for item in code_contents:
+        item['filename'] = item['filename'].replace('\\', '/')
 
     # Detect project context and prioritize files
     project_context = detect_project_context(code_contents)
@@ -772,7 +899,8 @@ def construct_user_prompt(
     prompt_parts.append("| File | Lines | Chars | Lang | Complexity |\n")
     prompt_parts.append("|------|-------|-------|------|------------|\n")
     for stat in file_stats:
-        prompt_parts.append(f"| {stat['filename']} | {stat['lines']:,} | {stat['chars']:,} | {stat['lang']} | {stat['complexity']} |\n")
+        safe_name = _sanitize_for_prompt(stat['filename'])
+        prompt_parts.append(f"| {safe_name} | {stat['lines']:,} | {stat['chars']:,} | {stat['lang']} | {stat['complexity']} |\n")
     prompt_parts.append("\n")
     
     if review_context:
@@ -797,7 +925,7 @@ def construct_user_prompt(
     if has_layer_info:
         for layer_name, files in layers.items():
             if files:
-                file_list = ', '.join(Path(f).name for f in files[:6])
+                file_list = ', '.join(_sanitize_for_prompt(Path(f).name) for f in files[:6])
                 extra = f" (+{len(files) - 6} more)" if len(files) > 6 else ""
                 prompt_parts.append(f"- **{layer_name}**: `{file_list}`{extra}\n")
         prompt_parts.append("\n")
@@ -830,7 +958,7 @@ def construct_user_prompt(
             if common_blocks:
                 prompt_parts.append("**Symbols defined across multiple files** (potential candidates for shared module):\n")
                 for sym, files in common_blocks[:6]:
-                    file_list = ', '.join(f.split('/')[-1] for f in files[:4])
+                    file_list = ', '.join(_sanitize_for_prompt(f.split('/')[-1]) for f in files[:4])
                     extra = f" (+{len(files) - 4} more)" if len(files) > 4 else ""
                     prompt_parts.append(f"- `{sym}()` / `class {sym}` — {file_list}{extra}\n")
                 prompt_parts.append("\n")
@@ -843,7 +971,7 @@ def construct_user_prompt(
                 prompt_parts.append(", ".join(f"{style} ({len(files)})" for style, files in error_styles.items()))
                 prompt_parts.append("\n")
             if logger_users:
-                prompt_parts.append(f"**Logger setup** found in: {', '.join(Path(f).name for f in logger_users)}\n")
+                prompt_parts.append(f"**Logger setup** found in: {', '.join(_sanitize_for_prompt(Path(f).name) for f in logger_users)}\n")
             prompt_parts.append("\n")
     
     # Include file processing report
@@ -874,7 +1002,7 @@ def construct_user_prompt(
         elif chars < 100 and lines < 5:
             truncation_note = " ⚠️ **VERY SMALL**"
 
-        prompt_parts.append(f"{i}. **{filename}** ({lines} lines, {chars} chars, {lang}){truncation_note}\n")
+        prompt_parts.append(f"{i}. **{_sanitize_for_prompt(filename)}** ({lines} lines, {chars} chars, {lang}){truncation_note}\n")
 
 
     # Add each file with headers (in dependency order)
@@ -893,17 +1021,18 @@ def construct_user_prompt(
             )
 
         # Apply summary mode: keep head + tail
-        if summary_mode and len(displayed) > 4000:
-            head_chars = 1500
-            tail_chars = 1500
+        if summary_mode and len(displayed) > (SUMMARY_MODE_HEAD_CHARS + SUMMARY_MODE_TAIL_CHARS):
+            head_chars = SUMMARY_MODE_HEAD_CHARS
+            tail_chars = SUMMARY_MODE_TAIL_CHARS
             displayed = (
                 displayed[:head_chars]
                 + f"\n\n... [{len(displayed) - head_chars - tail_chars} chars omitted in summary mode] ...\n\n"
                 + displayed[-tail_chars:]
             )
 
-        prompt_parts.append(f"### FILE: {filename}\n\n")
-        prompt_parts.append(f"```\n{displayed}\n```\n\n")
+        fence = _prompt_fence(displayed)
+        prompt_parts.append(f"### FILE: {_sanitize_for_prompt(filename)}\n\n")
+        prompt_parts.append(f"{fence}\n{displayed}\n{fence}\n\n")
 
     if summary_mode:
         prompt_parts.append("\n*Note: Summary mode is active — file bodies are abbreviated. "

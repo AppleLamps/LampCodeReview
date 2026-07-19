@@ -1,13 +1,12 @@
 from pathlib import Path
-from dotenv import load_dotenv
 
 # --- Constants and Configuration ---
-# Robustly load .env from the app directory (and let python-dotenv auto-discover as fallback)
 APP_DIR = Path(__file__).resolve().parent
-_ = load_dotenv(APP_DIR / ".env", override=False)  # Load from app directory with fallback to parent discovery
 
 MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
+MAX_DECOMPRESSION_RATIO = 100      # Reject ZIP entries that decompress >100x their compressed size (ZIP bomb)
+BINARY_RATIO_THRESHOLD = 0.3       # Fraction of non-printable chars above which a file is flagged as binary
 SUPPORTED_EXTS = (
     ".py", ".js", ".java", ".ts", ".go", ".rb", ".php", ".cs", ".c", ".cpp",
     ".h", ".hpp", ".html", ".htm", ".css", ".sql", ".yaml", ".yml", ".json",
@@ -39,7 +38,18 @@ RATE_LIMIT_SECONDS = 10  # Minimum seconds between reviews
 
 # Prompt construction configuration
 SUMMARY_MODE_TRIGGER_CHARS = 200_000  # Auto-suggest summary mode above this prompt size
-DEFAULT_MAX_FILE_CHARS = 30_000      # Per-file char cap to avoid runaway prompts
+SUMMARY_MODE_HEAD_CHARS = 1500        # Characters kept from file start in summary mode
+SUMMARY_MODE_TAIL_CHARS = 1500        # Characters kept from file end in summary mode
+DEFAULT_MAX_FILE_CHARS = 30_000       # Per-file char cap to avoid runaway prompts
+
+# Token-estimation ratios by model family (tokens per character)
+MODEL_TOKEN_RATIOS = {
+    "gpt-": 0.30,
+    "claude": 0.28,
+    "gemini": 0.25,
+    "grok": 0.25,
+    "default": 0.25,
+}
 
 SYSTEM_PROMPT = r"""You are an expert code reviewer. Your task is to provide a comprehensive and actionable analysis of the provided code.
 

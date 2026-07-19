@@ -101,7 +101,7 @@ def stream_grok_review(
         system_prompt = SYSTEM_PROMPT
 
     # Validate with both prompts for accurate token count
-    validation = validate_and_estimate_tokens(user_prompt, system_prompt)
+    validation = validate_and_estimate_tokens(user_prompt, system_prompt, model=model)
 
     # Log the request
     log_request(request_id, model, validation["estimated_tokens"], file_count)

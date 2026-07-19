@@ -29,13 +29,13 @@ def _generate_request_id(code_contents: List[Dict[str, str]]) -> str:
 
 def _log_request_to_history(
     request_id: str,
-    user_prompt: str,
     review_mode: str,
     selected_model: str,
     file_count: int,
     estimated_tokens: int,
+    prompt_length_chars: int,
 ) -> None:
-    """Log request details to history for diagnostics."""
+    """Log request metadata to history for diagnostics."""
     try:
         HISTORY_DIR.mkdir(exist_ok=True)
         log_entry = {
@@ -45,13 +45,11 @@ def _log_request_to_history(
             "selected_model": selected_model,
             "file_count": file_count,
             "estimated_tokens": estimated_tokens,
-            "prompt_length_chars": len(user_prompt),
-            "prompt_excerpt": user_prompt[:500] + ("..." if len(user_prompt) > 500 else ""),
+            "prompt_length_chars": prompt_length_chars,
         }
         log_file = HISTORY_DIR / f"{request_id}.json"
         log_file.write_text(json.dumps(log_entry, indent=2), encoding="utf-8")
-    except Exception as e:
-        # Best-effort logging — don't block the request
+    except Exception:
         pass
 
 
@@ -63,21 +61,32 @@ def prepare_review(
     summary_mode: Optional[bool] = None,
     max_file_chars: Optional[int] = None,
 ) -> Tuple[List[Dict[str, str]], List[str], str, str, Tuple[bool, str, int]]:
-    """Prepare code review payload: process files, build prompt, and validate size.
+    """Prepare code review payload: process files, build prompt, and validate size."""
+    from config import DEFAULT_MAX_FILE_CHARS, SUMMARY_MODE_TRIGGER_CHARS, MAX_FILE_SIZE
 
-    Args:
-        uploaded_files: Files uploaded by the user.
-        review_mode: One of "Standard Review", "Refactor", "IDE Implementation Instructions".
-        selected_model: OpenRouter model identifier.
-        requested_focus: Optional override for the focus directive sent to the model.
-        summary_mode: If None, auto-decide based on estimated size; if True/False, override.
-        max_file_chars: Optional per-file char cap for the user prompt.
-
-    Returns:
-        (code_contents, warnings, user_prompt, request_id, (is_valid, size_message, estimated_tokens))
-    """
-    from config import DEFAULT_MAX_FILE_CHARS, SUMMARY_MODE_TRIGGER_CHARS
     code_contents, warnings = process_uploaded_files(uploaded_files)
+    max_file_cap = max_file_chars or DEFAULT_MAX_FILE_CHARS
+
+    # Estimate total content chars to decide summary mode before building prompt
+    def _estimate_content_chars(contents: List[Dict[str, str]]) -> int:
+        total = 0
+        for item in contents:
+            chars = len(item['content'])
+            if max_file_cap and chars > max_file_cap:
+                total += max_file_cap
+            else:
+                total += chars
+        return total
+
+    auto_summary = summary_mode
+    if auto_summary is None:
+        estimated_content = _estimate_content_chars(code_contents)
+        # Rough overhead: ~2K chars per file for metadata/stats/headers
+        estimated_overhead = len(code_contents) * 2000 + 5000
+        estimated_total = estimated_content + estimated_overhead
+        auto_summary = estimated_total > SUMMARY_MODE_TRIGGER_CHARS
+
+    # ... (focus directive defaults remain the same)
 
     # Default focus directives by mode
     if requested_focus is None:
@@ -120,21 +129,9 @@ def prepare_review(
         code_contents,
         warnings=warnings,
         review_context=review_context,
-        summary_mode=bool(summary_mode) if summary_mode is not None else False,
-        max_file_chars=max_file_chars or DEFAULT_MAX_FILE_CHARS,
+        summary_mode=bool(auto_summary),
+        max_file_chars=max_file_cap,
     )
-
-    # Auto-decide summary mode if user didn't override
-    if summary_mode is None:
-        total_chars = len(user_prompt)
-        if total_chars > SUMMARY_MODE_TRIGGER_CHARS:
-            user_prompt = construct_user_prompt(
-                code_contents,
-                warnings=warnings,
-                review_context=review_context,
-                summary_mode=True,
-                max_file_chars=max_file_chars or DEFAULT_MAX_FILE_CHARS,
-            )
 
     # Get validation with system prompt for accurate token count
     from config import SYSTEM_PROMPT, IDE_INSTRUCTIONS_PROMPT, REFACTOR_SYSTEM_PROMPT
@@ -145,7 +142,7 @@ def prepare_review(
     else:
         system_prompt = SYSTEM_PROMPT
 
-    validation = validate_and_estimate_tokens(user_prompt, system_prompt)
+    validation = validate_and_estimate_tokens(user_prompt, system_prompt, model=selected_model)
     is_valid = validation["is_valid"]
     size_message = validation.get("error") or validation.get("warning") or f"Request size OK: ~{validation['estimated_tokens']:,} tokens"
     estimated_tokens = validation["estimated_tokens"]
@@ -154,11 +151,11 @@ def prepare_review(
     request_id = _generate_request_id(code_contents)
     _log_request_to_history(
         request_id=request_id,
-        user_prompt=user_prompt,
         review_mode=review_mode,
         selected_model=selected_model,
         file_count=len(code_contents),
         estimated_tokens=estimated_tokens,
+        prompt_length_chars=len(user_prompt),
     )
 
     return code_contents, warnings, user_prompt, request_id, (is_valid, size_message, estimated_tokens)
