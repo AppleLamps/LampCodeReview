@@ -37,6 +37,10 @@ MODEL_OPTIONS = [
 
 RATE_LIMIT_SECONDS = 10  # Minimum seconds between reviews
 
+# Prompt construction configuration
+SUMMARY_MODE_TRIGGER_CHARS = 200_000  # Auto-suggest summary mode above this prompt size
+DEFAULT_MAX_FILE_CHARS = 30_000      # Per-file char cap to avoid runaway prompts
+
 SYSTEM_PROMPT = r"""You are an expert code reviewer. Your task is to provide a comprehensive and actionable analysis of the provided code.
 
 ## Your Analysis Framework
