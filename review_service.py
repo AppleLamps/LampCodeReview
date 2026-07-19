@@ -13,17 +13,17 @@ from openrouter_client import validate_and_estimate_tokens
 HISTORY_DIR = Path(".code_review_history")
 
 
-def _generate_request_id(uploaded_files: List[Any]) -> str:
-    """Generate a unique request ID based on file contents and timestamp."""
+def _generate_request_id(code_contents: List[Dict[str, str]]) -> str:
+    """Generate a unique request ID based on processed file contents."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     content_hash = ""
-    if uploaded_files:
-        first_file = uploaded_files[0]
-        try:
-            data = first_file.read() if hasattr(first_file, 'read') else b""
-            content_hash = hashlib.md5(str(data).encode()[:1000]).hexdigest()[:8]
-        except Exception:
-            content_hash = "unknown"
+    if code_contents:
+        m = hashlib.md5()
+        for item in sorted(code_contents, key=lambda x: x['filename']):
+            m.update(item['filename'].encode())
+            m.update(str(len(item['content'])).encode())
+            m.update(item['content'][:200].encode())
+        content_hash = m.hexdigest()[:8]
     return f"req_{timestamp}_{content_hash}"
 
 
@@ -151,7 +151,7 @@ def prepare_review(
     estimated_tokens = validation["estimated_tokens"]
 
     # Generate request ID and log to history
-    request_id = _generate_request_id(uploaded_files)
+    request_id = _generate_request_id(code_contents)
     _log_request_to_history(
         request_id=request_id,
         user_prompt=user_prompt,

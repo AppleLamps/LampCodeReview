@@ -14,7 +14,6 @@ from config import (
 from review_service import prepare_review
 from reviewer import stream_grok_review, StreamCancellationToken
 from openrouter_client import validate_and_estimate_tokens, estimate_cost
-from openrouter_client import validate_and_estimate_tokens, estimate_cost
 
 
 def display_about_section():
@@ -279,57 +278,58 @@ def start_review(api_key, uploaded_files, review_mode, selected_model):
     # Determine if using IDE instructions mode
     use_ide_instructions = review_mode == "IDE Implementation Instructions"
 
-    # Start streaming review
-    if st.button("🚀 Analyze Code", type="primary", use_container_width=True, disabled=not is_valid):
-        # Initialize a cancellation token for this run
-        cancel_token = StreamCancellationToken()
-        st.session_state.active_cancel_token = cancel_token
+    # Start streaming review directly (single click from the top-level button)
+    cancel_token = StreamCancellationToken()
+    st.session_state.active_cancel_token = cancel_token
 
-        progress_bar = st.progress(0)
-        result_container = st.empty()
-        cancel_placeholder = st.empty()
+    progress_bar = st.progress(0)
+    result_container = st.empty()
+    cancel_placeholder = st.empty()
 
-        with cancel_placeholder.container():
-            cancel_clicked = st.button("⏹️ Cancel", key=f"cancel_{request_id}")
-        if cancel_clicked:
-            cancel_token.cancel()
+    full_response = ""
+    chunk_count = 0
+    finished = False
 
-        full_response = ""
-        chunk_count = 0
-
-        try:
-            for chunk in stream_grok_review(
-                api_key,
-                user_prompt,
-                use_ide_instructions,
-                model=st.session_state.selected_model,
-                file_count=len(code_contents),
-                review_mode=review_mode,
-                cancel_token=cancel_token,
-            ):
+    try:
+        iterator = stream_grok_review(
+            api_key, user_prompt, use_ide_instructions,
+            model=st.session_state.selected_model,
+            file_count=len(code_contents),
+            review_mode=review_mode,
+            cancel_token=cancel_token,
+        )
+        while not finished:
+            try:
+                with cancel_placeholder.container():
+                    cancel_clicked = st.button("⏹️ Cancel", key=f"cancel_{request_id}")
+                if cancel_clicked:
+                    cancel_token.cancel()
+                chunk = next(iterator)
                 chunk_count += 1
                 full_response += chunk
-
-                # Update progress (simulate progress based on chunk count)
-                progress = min(chunk_count / 100, 0.95)  # Cap at 95% until complete
+                progress = min(chunk_count / 100, 0.95)
                 progress_bar.progress(progress)
-
-                # Update the display with current response
                 result_container.markdown(full_response)
-        except Exception as e:
-            st.error(f"❌ Streaming failed: {e}")
+            except StopIteration:
+                finished = True
+            except Exception as e:
+                st.error(f"❌ Streaming failed: {e}")
+                finished = True
+                break
+    except Exception as e:
+        st.error(f"❌ Streaming failed: {e}")
 
-        # Complete the progress bar
-        progress_bar.progress(1.0)
-        time.sleep(0.3)
-        progress_bar.empty()
-        cancel_placeholder.empty()
+    # Complete the progress bar
+    progress_bar.progress(1.0)
+    time.sleep(0.3)
+    progress_bar.empty()
+    cancel_placeholder.empty()
 
-        # Store the result
-        st.session_state.review_result = full_response
-        st.session_state.review_complete = True
-        st.session_state.pop("active_cancel_token", None)
-        st.rerun()
+    # Store the result
+    st.session_state.review_result = full_response
+    st.session_state.review_complete = True
+    st.session_state.pop("active_cancel_token", None)
+    st.rerun()
 
 
 def display_results():

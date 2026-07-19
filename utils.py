@@ -1,3 +1,4 @@
+import os
 import zipfile
 import re
 from datetime import datetime
@@ -285,8 +286,33 @@ def detect_dependencies(code_contents: List[Dict[str, str]]) -> List[Dict[str, s
             for pattern in python_patterns + js_patterns:
                 for match in re.finditer(pattern, content):
                     module = match.group(1)
-                    # Strip relative prefixes
                     if module.startswith('.'):
+                        # Resolve relative import against the importer's directory
+                        norm_filename = filename.replace(os.sep, '/')
+                        importer_dir = PurePosixPath(norm_filename).parent
+                        try:
+                            raw_parts = list((importer_dir / module).parts)
+                            resolved_parts: list = []
+                            for p in raw_parts:
+                                if p == '..':
+                                    if resolved_parts:
+                                        resolved_parts.pop()
+                                elif p != '.':
+                                    resolved_parts.append(p)
+                            resolved_str: Optional[str] = '/'.join(resolved_parts) if resolved_parts else None
+                        except Exception:
+                            resolved_str = None
+                        if resolved_str:
+                            candidates = [resolved_str]
+                            for ext in ('.ts', '.tsx', '.js', '.jsx'):
+                                candidates.append(resolved_str + ext)
+                                candidates.append(resolved_str + '/index' + ext)
+                            code_filenames_norm = {itm['filename'].replace(os.sep, '/'): itm for itm in code_contents}
+                            for cand in candidates:
+                                cand_norm = cand.lstrip('/')
+                                if cand_norm in code_filenames_norm:
+                                    imports.add(_file_module(cand_norm))
+                                    break
                         continue
                     # Take only the top-level segment (e.g., "utils.helper" -> "utils")
                     top_module = module.split('.')[0].split('/')[0]
@@ -366,9 +392,16 @@ def detect_dependencies(code_contents: List[Dict[str, str]]) -> List[Dict[str, s
         return 1
 
     # Stable, dependency-aware sort:
-    # - primary key = dependency index (so deps are still before dependents)
+    # - primary key = coarse bucket (10-percentile groups) of dependency index
+    #   so category hints can break ties within the same dependency layer
     # - secondary key = category hint
-    return sorted(ordered, key=lambda item: (deps_index.get(item['filename'], 1_000_000), categorize(item['filename'])))
+    BUCKET = max(1, len(ordered) // 10)
+
+    def sort_key(item: Dict[str, Any]) -> tuple:
+        deps_rank = deps_index.get(item['filename'], 1_000_000) // BUCKET
+        return (deps_rank, categorize(item['filename']))
+
+    return sorted(ordered, key=sort_key)
 
 
 def detect_redundancy(code_contents: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -433,11 +466,19 @@ def detect_redundancy(code_contents: List[Dict[str, str]]) -> Dict[str, Any]:
                     patterns['logger_setup'].append(filename)
 
             # Detect repeated function/class signatures
-            sig_pattern = r'^\s*(?:def|class|function|async function|const\s+\w+\s*=\s*\(?)\s*(\w+)'
-            for match in re.finditer(sig_pattern, content, re.MULTILINE):
-                sig = match.group(1)
-                if len(sig) > 3:  # skip very short names
-                    all_blocks.setdefault(sig, []).append(filename)
+            sig_patterns = [
+                r'^\s*def\s+(\w+)',                          # def foo
+                r'^\s*class\s+(\w+)',                        # class Foo
+                r'^\s*function\s+(\w+)',                     # function foo
+                r'^\s*async\s+function\s+(\w+)',             # async function foo
+                r'^\s*const\s+(\w+)\s*=',                    # const foo =
+                r'^\s*(?:const|let|var)\s+(\w+)\s*=\s*\(',  # const/let/var foo = (
+            ]
+            for pat in sig_patterns:
+                for match in re.finditer(pat, content, re.MULTILINE):
+                    sig = match.group(1)
+                    if len(sig) > 3:  # skip very short names
+                        all_blocks.setdefault(sig, []).append(filename)
 
         # Take only symbols repeated across 2+ files
         for sig, files in all_blocks.items():
@@ -687,8 +728,9 @@ def construct_user_prompt(
         chars = len(content)
         # Simple complexity: avg line length + nesting depth estimate
         avg_line_len = chars / max(lines, 1)
-        nesting = content.count('    ') / max(lines, 1) * 4  # rough indent estimate
-        complexity = "Low" if lines < 100 and avg_line_len < 80 else ("High" if lines > 300 or avg_line_len > 120 else "Medium")
+        nesting = content.count('    ') / max(lines, 1) * 4  # rough indent depth
+        complexity = "Low" if lines < 100 and avg_line_len < 80 else (
+            "High" if lines > 300 or avg_line_len > 120 or nesting > 8 else "Medium")
         lang = filename.split('.')[-1] if '.' in filename else 'unknown'
         file_stats.append({
             'filename': filename,
@@ -833,7 +875,7 @@ def construct_user_prompt(
             truncation_note = " ⚠️ **VERY SMALL**"
 
         prompt_parts.append(f"{i}. **{filename}** ({lines} lines, {chars} chars, {lang}){truncation_note}\n")
-        prompt_parts.append("\n" + "="*60 + "\n\n")
+
 
     # Add each file with headers (in dependency order)
     for item in ordered_contents:
