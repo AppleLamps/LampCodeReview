@@ -36,7 +36,16 @@ The AI then provides a prioritized list of findings, complete with actionable re
 
 
 def handle_api_key():
-    """Handle API key retrieval and validation."""
+    """Handle API key retrieval and validation.
+
+    The key may come from the environment, Streamlit secrets, or a manual
+    entry field. Manual entries are persisted in ``st.session_state`` so the
+    key survives reruns (e.g. when the user clicks "Analyze Code" or the app
+    refreshes), letting each user supply their own key.
+    """
+    if "api_key_source" not in st.session_state:
+        st.session_state.api_key_source = None
+
     api_key = None
     api_key_source = None
 
@@ -47,6 +56,10 @@ def handle_api_key():
     elif hasattr(st, 'secrets') and 'OPENROUTER_API_KEY' in st.secrets:
         api_key = st.secrets['OPENROUTER_API_KEY']
         api_key_source = "Streamlit secrets"
+    elif st.session_state.get("manual_api_key"):
+        # Reuse a key previously entered this session
+        api_key = st.session_state.manual_api_key
+        api_key_source = "manual input"
 
     if not api_key:
         with st.expander("🔑 OpenRouter API Key Required", expanded=True):
@@ -55,13 +68,33 @@ def handle_api_key():
         
         1. **Add to .env file**: `OPENROUTER_API_KEY=your_key_here`
         2. **Add to Streamlit secrets**: Create `.streamlit/secrets.toml` with your key
-        3. **Enter manually**: Use the input field above
+        3. **Enter manually**: Use the input field below — your key stays in this session only
         
         Get your API key from: https://openrouter.ai/keys
         """)
-        api_key = st.text_input("Enter your OpenRouter API Key:", type="password")
-        if api_key:
-            api_key_source = "manual input"
+            api_key = st.text_input(
+                "Enter your OpenRouter API Key:",
+                type="password",
+                key="api_key_input",
+                help="Your key is used only for this session and is never stored on disk.",
+            )
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("Save Key", key="save_api_key"):
+                    if api_key:
+                        st.session_state.manual_api_key = api_key
+                        st.session_state.api_key_source = "manual input"
+                        st.rerun()
+            with col2:
+                if st.session_state.get("manual_api_key"):
+                    if st.button("Clear Saved Key", key="clear_api_key"):
+                        st.session_state.pop("manual_api_key", None)
+                        st.session_state.api_key_source = None
+                        st.rerun()
+            if st.session_state.get("manual_api_key"):
+                st.caption("✅ Key saved for this session. You can now use the tool below.")
+                api_key = st.session_state.manual_api_key
+                api_key_source = "manual input"
 
     if api_key:
         # Validate API key format and length
@@ -69,18 +102,21 @@ def handle_api_key():
             st.error("Invalid OpenRouter API key format. It should start with 'sk-or-' and be at least 20 characters long.")
             st.stop()
         
-        # Test API key validity with a minimal request
-        try:
-            test_response = requests.get(
-                "https://openrouter.ai/api/v1/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=5
-            )
-            if test_response.status_code != 200:
-                st.error("API key validation failed. Please check your OpenRouter credentials.")
-                st.stop()
-        except requests.RequestException:
-            st.warning("Could not validate API key (network issue). Proceeding with caution.")
+        # Only ping OpenRouter once per distinct key to avoid redundant network calls
+        if st.session_state.get("validated_api_key") != api_key:
+            try:
+                test_response = requests.get(
+                    "https://openrouter.ai/api/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=5
+                )
+                if test_response.status_code != 200:
+                    st.error("API key validation failed. Please check your OpenRouter credentials.")
+                    st.stop()
+                st.session_state.validated_api_key = api_key
+            except requests.RequestException:
+                st.warning("Could not validate API key (network issue). Proceeding with caution.")
+                st.session_state.validated_api_key = api_key
         
         st.success(f"✅ API Key loaded and validated successfully ({api_key_source}).")
 
