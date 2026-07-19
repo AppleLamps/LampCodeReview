@@ -1,12 +1,16 @@
 import json
 import logging
-from typing import Generator
+from typing import Generator, Dict, Any
 
 import requests
 
 logger = logging.getLogger(__name__)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Token estimation: roughly 0.25 tokens per character for code
+ESTIMATED_TOKENS_PER_CHAR = 0.25
+MAX_REQUEST_TOKENS = 200000
 
 
 def stream_chat(
@@ -16,9 +20,7 @@ def stream_chat(
     user_prompt: str,
     timeout: int = 30,
 ) -> Generator[str, None, None]:
-    """Stream chat completions from OpenRouter.
-    Minimal client wrapper to centralize headers, payload, and streaming.
-    """
+    """Stream chat completions from OpenRouter."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -65,3 +67,65 @@ def stream_chat(
             except Exception as e:
                 logger.warning(f"Unexpected streaming chunk structure: {e}")
                 continue
+
+
+def validate_and_estimate_tokens(user_prompt: str, system_prompt: str = "") -> Dict[str, Any]:
+    """
+    Validate request size and estimate token count.
+    
+    Returns: dict with validation result, token estimates, and warnings
+    """
+    if not user_prompt:
+        return {
+            "is_valid": False,
+            "error": "Prompt is empty",
+            "estimated_tokens": 0,
+            "warning": None,
+        }
+    
+    total_chars = len(user_prompt) + len(system_prompt)
+    estimated_tokens = int(total_chars * ESTIMATED_TOKENS_PER_CHAR)
+    
+    if estimated_tokens > MAX_REQUEST_TOKENS:
+        return {
+            "is_valid": False,
+            "error": f"Request too large: ~{estimated_tokens} tokens (limit: {MAX_REQUEST_TOKENS}). Try uploading fewer or smaller files.",
+            "estimated_tokens": estimated_tokens,
+            "warning": None,
+        }
+    
+    if estimated_tokens > MAX_REQUEST_TOKENS * 0.75:
+        return {
+            "is_valid": True,
+            "error": None,
+            "estimated_tokens": estimated_tokens,
+            "warning": f"Large request: ~{estimated_tokens} tokens (limit: {MAX_REQUEST_TOKENS}). Response may be truncated.",
+        }
+    
+    return {
+        "is_valid": True,
+        "error": None,
+        "estimated_tokens": estimated_tokens,
+        "warning": f"Request size OK: ~{estimated_tokens} tokens",
+    }
+
+
+def estimate_cost(tokens: int, model: str) -> float:
+    """Rough cost estimate in USD based on model pricing."""
+    model_costs = {
+        "grok": 0.0005,
+        "gpt-5": 0.01,
+        "gpt-4": 0.03,
+        "claude": 0.015,
+        "gemini": 0.001,
+        "default": 0.002,
+    }
+    
+    model_lower = model.lower()
+    cost_per_1k = model_costs.get("default", 0.002)
+    for key, cost in model_costs.items():
+        if key in model_lower:
+            cost_per_1k = cost
+            break
+    
+    return (tokens / 1000) * cost_per_1k

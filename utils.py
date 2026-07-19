@@ -1,5 +1,7 @@
+import os
 import zipfile
 import re
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import List, Dict, Tuple, Any, Optional, Set
 from config import SUPPORTED_EXTS_SET, MAX_TOTAL_SIZE, MAX_FILE_SIZE
@@ -77,7 +79,7 @@ def _decode_and_validate_content(raw_content: bytes, filename: str, warnings: Li
     return decoded_content
 
 
-def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], warnings: List[str], max_file_size: int) -> None:
+def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], warnings: List[str], max_file_size: int, upload_metadata: Dict) -> None:
     """Process a ZIP file and extract supported code files."""
     try:
         with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
@@ -89,6 +91,10 @@ def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], w
                     safe_filename, error_reason = sanitize_zip_member_path(file_info.filename)
                     if error_reason:
                         logger.debug(f"Skipping {file_info.filename}: {error_reason}")
+                        upload_metadata['skipped_files'].append({
+                            'name': file_info.filename,
+                            'reason': f'zip_path_error: {error_reason}'
+                        })
                         continue
 
                     if not safe_filename:
@@ -96,6 +102,10 @@ def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], w
 
                     if file_info.file_size > max_file_size:
                         warnings.append(f"⚠️ Skipping large file in ZIP: {safe_filename} ({file_info.file_size} bytes)")
+                        upload_metadata['skipped_files'].append({
+                            'name': safe_filename,
+                            'reason': 'file_too_large'
+                        })
                         continue
 
                     if not is_supported_file(safe_filename) or safe_filename.startswith('.'):
@@ -112,6 +122,7 @@ def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], w
                     if len(content) > max_file_size:
                         content = content[:max_file_size]
                         warnings.append(f"⚠️ File '{safe_filename}' truncated to {max_file_size // 1024**2}MB")
+                        upload_metadata['truncated_files'].append(safe_filename)
 
                     decoded_content = _decode_and_validate_content(content, safe_filename, warnings)
                     if decoded_content:
@@ -130,11 +141,15 @@ def _process_zip_file(uploaded_file: Any, code_contents: List[Dict[str, str]], w
         warnings.append(f"⚠️ Error processing ZIP file '{uploaded_file.name}'. Skipping.")
 
 
-def _process_regular_file(uploaded_file: Any, code_contents: List[Dict[str, str]], warnings: List[str], max_file_size: int) -> None:
+def _process_regular_file(uploaded_file: Any, code_contents: List[Dict[str, str]], warnings: List[str], max_file_size: int, upload_metadata: Dict) -> None:
     """Process a regular (non-ZIP) uploaded file."""
     try:
         if not is_supported_file(uploaded_file.name):
             logger.debug(f"Skipping unsupported file: {uploaded_file.name}")
+            upload_metadata['skipped_files'].append({
+                'name': uploaded_file.name,
+                'reason': 'unsupported_extension'
+            })
             return
 
         try:
@@ -142,11 +157,16 @@ def _process_regular_file(uploaded_file: Any, code_contents: List[Dict[str, str]
         except IOError as e:
             logger.warning(f"Failed to read file '{uploaded_file.name}': {e}")
             warnings.append(f"⚠️ Could not read '{uploaded_file.name}'. Skipping.")
+            upload_metadata['skipped_files'].append({
+                'name': uploaded_file.name,
+                'reason': 'read_error'
+            })
             return
         
         if len(content) > max_file_size:
             content = content[:max_file_size]
             warnings.append(f"⚠️ File '{uploaded_file.name}' truncated to {max_file_size // 1024**2}MB")
+            upload_metadata['truncated_files'].append(uploaded_file.name)
 
         decoded_content = _decode_and_validate_content(content, uploaded_file.name, warnings)
         if decoded_content:
@@ -157,6 +177,10 @@ def _process_regular_file(uploaded_file: Any, code_contents: List[Dict[str, str]
     except Exception as e:
         logger.error(f"Error processing regular file '{uploaded_file.name}': {e}")
         warnings.append(f"⚠️ Error processing '{uploaded_file.name}'. Skipping.")
+        upload_metadata['skipped_files'].append({
+            'name': uploaded_file.name,
+            'reason': str(e)
+        })
 
 
 def process_uploaded_files(
@@ -166,6 +190,16 @@ def process_uploaded_files(
     code_contents = []
     warnings = []
     total_size = 0
+    
+    # Track upload metadata for context
+    upload_metadata = {
+        'timestamp': datetime.now().isoformat(),
+        'source': 'local_upload',
+        'total_files': len(uploaded_files),
+        'total_size': 0,
+        'skipped_files': [],
+        'truncated_files': [],
+    }
 
     if not uploaded_files:
         return code_contents, warnings
@@ -177,21 +211,30 @@ def process_uploaded_files(
                 if file_size <= 0:
                     logger.warning(f"Skipping file with invalid size: {uploaded_file.name}")
                     warnings.append(f"⚠️ File '{uploaded_file.name}' has invalid size. Skipping.")
+                    upload_metadata['skipped_files'].append({
+                        'name': uploaded_file.name,
+                        'reason': 'invalid_size'
+                    })
                     continue
                 
                 total_size += file_size
+                upload_metadata['total_size'] = total_size
 
                 if total_size > MAX_TOTAL_SIZE:
                     warnings.append(f"⚠️ Total upload size exceeded {MAX_TOTAL_SIZE // 1024**2}MB. Skipping remaining files.")
                     break
 
                 if uploaded_file.name.lower().endswith('.zip'):
-                    _process_zip_file(uploaded_file, code_contents, warnings, MAX_FILE_SIZE)
+                    _process_zip_file(uploaded_file, code_contents, warnings, MAX_FILE_SIZE, upload_metadata)
                 else:
-                    _process_regular_file(uploaded_file, code_contents, warnings, MAX_FILE_SIZE)
+                    _process_regular_file(uploaded_file, code_contents, warnings, MAX_FILE_SIZE, upload_metadata)
             except Exception as e:
                 logger.error(f"Error processing file '{getattr(uploaded_file, 'name', 'unknown')}': {e}")
                 warnings.append(f"⚠️ Error processing '{getattr(uploaded_file, 'name', 'unknown')}'. Skipping.")
+                upload_metadata['skipped_files'].append({
+                    'name': getattr(uploaded_file, 'name', 'unknown'),
+                    'reason': str(e)
+                })
                 continue
     except Exception as e:
         logger.error(f"Critical error in process_uploaded_files: {e}")
@@ -202,109 +245,252 @@ def process_uploaded_files(
 
 def detect_dependencies(code_contents: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
-    Detect Python import dependencies and reorder files for logical flow.
-    Returns files ordered so dependencies come before dependents.
+    Detect import dependencies across Python and JavaScript/TypeScript files and
+    reorder files so dependencies come before dependents.
+
+    Returns:
+        Files ordered: configuration first, then entry points, then utilities,
+        then dependents. Within each band, dependency order is preserved.
     """
     if not code_contents:
         return []
-    
-    # Build import map
+
+    def _base_name(filename: str) -> str:
+        """Get the basename without directory and extension."""
+        return filename.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+
+    def _file_module(filename: str) -> str:
+        """Get a module name that other files might import this file as."""
+        base = _base_name(filename)
+        # Convert hyphens to underscores (Python convention)
+        return base.replace('-', '_')
+
+    # Build import map: file -> set of imported module names
     import_map = {}
     for item in code_contents:
         filename = item['filename']
         imports = set()
         try:
-            # Extract imports using regex
-            import_patterns = [
+            # Python imports
+            python_patterns = [
                 r'from\s+([\w.]+)\s+import',
                 r'import\s+([\w.]+)',
             ]
-            for pattern in import_patterns:
-                for match in re.finditer(pattern, item['content']):
-                    module = match.group(1).split('.')[0]  # Get top-level module
-                    imports.add(module)
+            # JS/TS imports
+            js_patterns = [
+                r'import\s+.*\s+from\s+["\']([^"\']+)["\']',
+                r'require\s*\(\s*["\']([^"\']+)["\']\s*\)',
+                r'import\s*\(\s*["\']([^"\']+)["\']\s*\)',  # dynamic import
+            ]
+            content = item['content']
+            for pattern in python_patterns + js_patterns:
+                for match in re.finditer(pattern, content):
+                    module = match.group(1)
+                    if module.startswith('.'):
+                        # Resolve relative import against the importer's directory
+                        norm_filename = filename.replace(os.sep, '/')
+                        importer_dir = PurePosixPath(norm_filename).parent
+                        try:
+                            raw_parts = list((importer_dir / module).parts)
+                            resolved_parts: list = []
+                            for p in raw_parts:
+                                if p == '..':
+                                    if resolved_parts:
+                                        resolved_parts.pop()
+                                elif p != '.':
+                                    resolved_parts.append(p)
+                            resolved_str: Optional[str] = '/'.join(resolved_parts) if resolved_parts else None
+                        except Exception:
+                            resolved_str = None
+                        if resolved_str:
+                            candidates = [resolved_str]
+                            for ext in ('.ts', '.tsx', '.js', '.jsx'):
+                                candidates.append(resolved_str + ext)
+                                candidates.append(resolved_str + '/index' + ext)
+                            code_filenames_norm = {itm['filename'].replace(os.sep, '/'): itm for itm in code_contents}
+                            for cand in candidates:
+                                cand_norm = cand.lstrip('/')
+                                if cand_norm in code_filenames_norm:
+                                    imports.add(_file_module(cand_norm))
+                                    break
+                        continue
+                    # Take only the top-level segment (e.g., "utils.helper" -> "utils")
+                    top_module = module.split('.')[0].split('/')[0]
+                    if top_module:
+                        imports.add(top_module)
         except Exception as e:
             logger.debug(f"Error parsing imports in {filename}: {e}")
         import_map[filename] = imports
-    
-    # Topological sort: order files so dependencies come first
-    ordered = []
+
+    # Build a reverse map: module name -> list of files that expose that module
+    module_to_files = {}
+    for filename in import_map:
+        module = _file_module(filename)
+        module_to_files.setdefault(module, []).append(filename)
+
+    # Topological sort with stable ordering
+    ordered: List[Dict[str, str]] = []
     visited = set()
     visiting = set()
-    
+
     def visit(filename: str) -> None:
         if filename in visited:
             return
         if filename in visiting:
-            # Circular dependency, just add it
+            # Circular dependency — break the cycle
             visiting.discard(filename)
             visited.add(filename)
             return
-        
+
         visiting.add(filename)
-        
+
         # Visit dependencies first
         for dep_module in import_map.get(filename, set()):
-            # Find if any file exports this module
-            for other_file in import_map:
-                if other_file != filename:
-                    base_name = other_file.split('.')[0]
-                    if base_name == dep_module:
-                        if other_file not in visited:
-                            visit(other_file)
-        
+            dep_files = module_to_files.get(dep_module, [])
+            for other_file in dep_files:
+                if other_file != filename and other_file not in visited:
+                    visit(other_file)
+
         visiting.discard(filename)
         visited.add(filename)
-        # Find the original item and add it
         for item in code_contents:
-            if item['filename'] == filename and filename not in [o['filename'] for o in ordered]:
+            if item['filename'] == filename and item not in ordered:
                 ordered.append(item)
-    
-    # Visit all files
+                break
+
     for item in code_contents:
         visit(item['filename'])
-    
-    return ordered if ordered else code_contents
+
+    # Build an index of dependency-ordered files
+    if not ordered:
+        return code_contents
+
+    deps_index = {item['filename']: i for i, item in enumerate(ordered)}
+
+    # Final ordering: trust the topological sort (deps before dependents).
+    # Optional category hints nudge obvious config/entry files earlier when
+    # dependencies don't dictate, but never reorder against the dep graph.
+    config_patterns = {
+        'config', 'settings', 'configuration', 'constants', 'env',
+        'pyproject', 'package.json', 'tsconfig', 'pom.xml', 'build.gradle',
+    }
+    entry_patterns = {
+        'main', 'app', 'index', 'server', 'cli', 'manage',
+    }
+    test_patterns = {'test', 'tests', '__tests__', 'spec', 'specs'}
+
+    def categorize(filename: str) -> int:
+        """Lower numbers come first (config/entry before source, tests last)."""
+        base = _base_name(filename).lower()
+        path = filename.lower()
+        if any(p in base for p in test_patterns) or '/test' in path:
+            return 3
+        if any(p in base for p in config_patterns) or '/config' in path:
+            return 0
+        if any(p in base for p in entry_patterns) or '/main' in path:
+            return 0
+        return 1
+
+    # Stable, dependency-aware sort:
+    # - primary key = coarse bucket (10-percentile groups) of dependency index
+    #   so category hints can break ties within the same dependency layer
+    # - secondary key = category hint
+    BUCKET = max(1, len(ordered) // 10)
+
+    def sort_key(item: Dict[str, Any]) -> tuple:
+        deps_rank = deps_index.get(item['filename'], 1_000_000) // BUCKET
+        return (deps_rank, categorize(item['filename']))
+
+    return sorted(ordered, key=sort_key)
 
 
 def detect_redundancy(code_contents: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     Detect common code patterns (shared imports, repeated patterns) across files.
-    Returns a dict of pattern type -> list of files containing it.
+
+    Returns:
+        Dict with keys:
+            - imports: {import_statement: [files_using_it]}
+            - docstring_style: {style_name: [files_using_it]}
+            - error_handling: {pattern_name: [files_using_it]}
+            - logger_setup: [files_that_set_up_a_logger]
+            - common_blocks: [(normalized_block, [files])] — top repeated code blocks
     """
-    patterns = {
+    patterns: Dict[str, Any] = {
         'imports': {},
         'docstring_style': {},
-        'error_handling': {}
+        'error_handling': {},
+        'logger_setup': [],
+        'common_blocks': [],
     }
-    
+
+    if not code_contents:
+        return patterns
+
     try:
+        all_blocks: Dict[str, List[str]] = {}
+
         for item in code_contents:
             filename = item['filename']
             content = item['content']
-            
-            # Extract imports
-            import_pattern = r'^(?:from|import)\s+.+$'
+
+            # Extract imports (line-based)
+            import_pattern = r'^(?:from|import|const\s+\w+\s*=\s*require|import\s+\*\s*as)\s+.+$'
             imports = set(re.findall(import_pattern, content, re.MULTILINE))
             for imp in imports:
-                if imp not in patterns['imports']:
-                    patterns['imports'][imp] = []
-                patterns['imports'][imp].append(filename)
-            
-            # Detect error handling patterns
-            if 'try:' in content and 'except' in content:
-                if 'error_handling' not in patterns:
-                    patterns['error_handling'] = {}
-                patterns['error_handling']['try-except'] = patterns['error_handling'].get('try-except', []) + [filename]
-            
-            # Detect logging patterns
-            if 'logging.getLogger' in content or 'logger' in content:
-                if 'logging' not in patterns:
-                    patterns['logging'] = {}
-                patterns['logging']['logger_usage'] = patterns['logging'].get('logger_usage', []) + [filename]
+                imp = imp.strip()
+                patterns['imports'].setdefault(imp, []).append(filename)
+
+            # Detect docstring style
+            if re.search(r'"""[\s\S]*?"""', content[:500]):
+                patterns['docstring_style'].setdefault('triple-double-quote', []).append(filename)
+            elif re.search(r"'''[\s\S]*?'''", content[:500]):
+                patterns['docstring_style'].setdefault('triple-single-quote', []).append(filename)
+            elif re.search(r'/\*\*[\s\S]*?\*/', content[:500]):
+                patterns['docstring_style'].setdefault('jsdoc', []).append(filename)
+
+            # Detect error-handling patterns
+            if re.search(r'\btry\s*:', content) and re.search(r'\bexcept\b', content):
+                patterns['error_handling'].setdefault('try-except', []).append(filename)
+            if re.search(r'\.catch\s*\(', content):
+                patterns['error_handling'].setdefault('promise-catch', []).append(filename)
+            if re.search(r'\bcatch\s*\(', content):
+                patterns['error_handling'].setdefault('try-catch', []).append(filename)
+
+            # Detect logger setup
+            if re.search(r'logger\s*=\s*logging\.getLogger', content):
+                if filename not in patterns['logger_setup']:
+                    patterns['logger_setup'].append(filename)
+            elif re.search(r'logging\.basicConfig', content):
+                if filename not in patterns['logger_setup']:
+                    patterns['logger_setup'].append(filename)
+
+            # Detect repeated function/class signatures
+            sig_patterns = [
+                r'^\s*def\s+(\w+)',                          # def foo
+                r'^\s*class\s+(\w+)',                        # class Foo
+                r'^\s*function\s+(\w+)',                     # function foo
+                r'^\s*async\s+function\s+(\w+)',             # async function foo
+                r'^\s*const\s+(\w+)\s*=',                    # const foo =
+                r'^\s*(?:const|let|var)\s+(\w+)\s*=\s*\(',  # const/let/var foo = (
+            ]
+            for pat in sig_patterns:
+                for match in re.finditer(pat, content, re.MULTILINE):
+                    sig = match.group(1)
+                    if len(sig) > 3:  # skip very short names
+                        all_blocks.setdefault(sig, []).append(filename)
+
+        # Take only symbols repeated across 2+ files
+        for sig, files in all_blocks.items():
+            unique_files = sorted(set(files))
+            if len(unique_files) >= 2:
+                patterns['common_blocks'].append((sig, unique_files))
+
+        # Sort common blocks by usage
+        patterns['common_blocks'].sort(key=lambda x: -len(x[1]))
     except Exception as e:
         logger.debug(f"Error detecting redundancy: {e}")
-    
+
     return patterns
 
 
@@ -476,11 +662,22 @@ def prioritize_files(code_contents: List[Dict[str, str]]) -> List[Dict[str, str]
 def construct_user_prompt(
     code_contents: List[Dict[str, str]],
     warnings: Optional[List[str]] = None,
-    review_context: Optional[Dict[str, str]] = None
+    review_context: Optional[Dict[str, str]] = None,
+    summary_mode: bool = False,
+    max_file_chars: Optional[int] = None,
 ) -> str:
-    """Construct the user prompt with comprehensive metadata, architecture overview, and organized code content."""
+    """Construct the user prompt with comprehensive metadata, architecture overview, and organized code content.
+
+    Args:
+        code_contents: List of {"filename": str, "content": str} items.
+        warnings: Optional list of processing warnings to surface.
+        review_context: Optional dict of contextual information for the reviewer.
+        summary_mode: If True, emit a compact prompt with truncated file bodies
+            (first/last N chars per file) to reduce token use on large codebases.
+        max_file_chars: Per-file character cap (after summary_mode truncation).
+    """
     prompt_parts = []
-    
+
     # Detect project context and prioritize files
     project_context = detect_project_context(code_contents)
     prioritized_contents = prioritize_files(code_contents)
@@ -511,7 +708,7 @@ def construct_user_prompt(
     
     # Detect shared patterns
     redundancy_info = detect_redundancy(ordered_contents)
-
+    
     # Add metadata summary
     total_chars = sum(len(item['content']) for item in ordered_contents)
     total_lines = sum(item['content'].count('\n') for item in ordered_contents)
@@ -522,68 +719,146 @@ def construct_user_prompt(
         ext = item['filename'].split('.')[-1] if '.' in item['filename'] else 'unknown'
         languages[ext] = languages.get(ext, 0) + 1
     
+    # Calculate complexity hints per file
+    file_stats = []
+    for item in ordered_contents:
+        filename = item['filename']
+        content = item['content']
+        lines = content.count('\n')
+        chars = len(content)
+        # Simple complexity: avg line length + nesting depth estimate
+        avg_line_len = chars / max(lines, 1)
+        nesting = content.count('    ') / max(lines, 1) * 4  # rough indent depth
+        complexity = "Low" if lines < 100 and avg_line_len < 80 else (
+            "High" if lines > 300 or avg_line_len > 120 or nesting > 8 else "Medium")
+        lang = filename.split('.')[-1] if '.' in filename else 'unknown'
+        file_stats.append({
+            'filename': filename,
+            'lines': lines,
+            'chars': chars,
+            'lang': lang,
+            'complexity': complexity,
+            'avg_line_len': round(avg_line_len, 1),
+        })
+    
+    # Add submission metadata
+    upload_time = datetime.now().isoformat()
+
     prompt_parts.append("## Code Review Request\n")
     prompt_parts.append(f"**Submission Metadata:**\n")
-    prompt_parts.append(f"- Files Analyzed: {len(ordered_contents)}")
-    prompt_parts.append(f"- Total Lines of Code: {total_lines:,}")
-    prompt_parts.append(f"- Total Characters: {total_chars:,}")
-    prompt_parts.append(f"- Estimated Tokens: ~{int(total_chars * 0.25):,}")
+    prompt_parts.append(f"- Files Analyzed: {len(ordered_contents)}\n")
+    prompt_parts.append(f"- Total Lines of Code: {total_lines:,}\n")
+    prompt_parts.append(f"- Total Characters: {total_chars:,}\n")
+    prompt_parts.append(f"- Estimated Tokens: ~{int(total_chars * 0.25):,}\n")
     prompt_parts.append(f"- Languages: {', '.join(f'{lang} ({count})' for lang, count in languages.items())}\n")
+    prompt_parts.append(f"- Upload Time: {upload_time}\n")
+    prompt_parts.append(f"- Source: Streamlit file upload (local/ZIP)\n\n")
     
     # Add project context
     prompt_parts.append("## Project Context\n")
-    prompt_parts.append(f"- **Project Type**: {project_context['project_type']}")
-    prompt_parts.append(f"- **Frameworks**: {', '.join(project_context['frameworks']) or 'None detected'}")
-    prompt_parts.append(f"- **Entry Points**: {', '.join(project_context['entry_points']) or 'None detected'}")
-    prompt_parts.append(f"- **Config Files**: {', '.join(project_context['config_files']) or 'None detected'}")
-    prompt_parts.append(f"- **Test Files**: {', '.join(project_context['test_files']) or 'None detected'}\n")
+    prompt_parts.append(f"- **Project Type**: {project_context['project_type']}\n")
+    prompt_parts.append(f"- **Frameworks**: {', '.join(project_context['frameworks']) or 'None detected'}\n")
+    prompt_parts.append(f"- **Entry Points**: {', '.join(project_context['entry_points']) or 'None detected'}\n")
+    prompt_parts.append(f"- **Config Files**: {', '.join(project_context['config_files']) or 'None detected'}\n")
+    prompt_parts.append(f"- **Test Files**: {', '.join(project_context['test_files']) or 'None detected'}\n\n")
     
     # Add file tree to the prompt
     prompt_parts.append("\n## Project Structure\n```\n")
     prompt_parts.append(file_tree_str)
     prompt_parts.append("\n```\n")
-
+    
+    # Add file statistics table
+    prompt_parts.append("\n## File Statistics\n\n")
+    prompt_parts.append("| File | Lines | Chars | Lang | Complexity |\n")
+    prompt_parts.append("|------|-------|-------|------|------------|\n")
+    for stat in file_stats:
+        prompt_parts.append(f"| {stat['filename']} | {stat['lines']:,} | {stat['chars']:,} | {stat['lang']} | {stat['complexity']} |\n")
+    prompt_parts.append("\n")
+    
     if review_context:
         prompt_parts.append("## Review Request Context\n\n")
         for label, value in review_context.items():
             prompt_parts.append(f"- **{label}**: {value}\n")
         prompt_parts.append("\n")
-
+    
     prompt_parts.append(
         "Please evaluate the provided application code and point out both code-level issues and opportunities to make the AI code review workflow itself more effective. Consider how files are processed before they are sent to you, how the API payload is constructed, and how prompts could better guide future reviews.\n\n"
     )
-
-    # Add module architecture overview
+    
+    # Add module architecture overview (data-driven from project_context)
+    layers = {
+        'Config Layer': project_context.get('config_files', []),
+        'Entry Points': project_context.get('entry_points', []),
+        'Test Layer': project_context.get('test_files', []),
+        'Frameworks': project_context.get('frameworks', []),
+    }
     prompt_parts.append("## Module Architecture\n\n")
-    prompt_parts.append("The codebase is organized into layers:\n")
-    prompt_parts.append("- **Configuration Layer** (config.py): Settings, constants, prompts\n")
-    prompt_parts.append("- **Processing Layer** (utils.py): File handling, validation, prompt construction\n")
-    prompt_parts.append("- **API Layer** (reviewer.py): OpenRouter integration, streaming, error handling\n")
-    prompt_parts.append("- **UI Layer** (app.py): Streamlit interface, orchestration\n\n")
-
+    has_layer_info = any(v for v in layers.values())
+    if has_layer_info:
+        for layer_name, files in layers.items():
+            if files:
+                file_list = ', '.join(Path(f).name for f in files[:6])
+                extra = f" (+{len(files) - 6} more)" if len(files) > 6 else ""
+                prompt_parts.append(f"- **{layer_name}**: `{file_list}`{extra}\n")
+        prompt_parts.append("\n")
+        if project_context.get('patterns'):
+            prompt_parts.append("**Detected patterns**: ")
+            prompt_parts.append(', '.join(project_context['patterns']))
+            prompt_parts.append("\n\n")
+    else:
+        prompt_parts.append("The codebase is organized into layers:\n")
+        prompt_parts.append("- **Configuration Layer** (config.py): Settings, constants, prompts\n")
+        prompt_parts.append("- **Processing Layer** (utils.py): File handling, validation, prompt construction\n")
+        prompt_parts.append("- **API Layer** (reviewer.py): OpenRouter integration, streaming, error handling\n")
+        prompt_parts.append("- **UI Layer** (app.py): Streamlit interface, orchestration\n\n")
+    
     # Add shared patterns section if any
     if redundancy_info:
         shared_imports = [imp for imp, files in redundancy_info.get('imports', {}).items() if len(files) > 1]
-        if shared_imports:
-            prompt_parts.append("## Shared Patterns\n\n")
-            prompt_parts.append("Common imports used across multiple files:\n")
-            for imp in sorted(shared_imports)[:10]:  # Limit to 10 most common
-                prompt_parts.append(f"- `{imp}`\n")
-            prompt_parts.append("\n")
+        common_blocks = redundancy_info.get('common_blocks', [])[:8]
+        docstring_styles = redundancy_info.get('docstring_style', {})
+        error_styles = redundancy_info.get('error_handling', {})
+        logger_users = redundancy_info.get('logger_setup', [])
 
+        if shared_imports or common_blocks or docstring_styles or error_styles or logger_users:
+            prompt_parts.append("## Shared Patterns\n\n")
+            if shared_imports:
+                prompt_parts.append("**Common imports** used across multiple files:\n")
+                for imp in sorted(shared_imports)[:10]:
+                    prompt_parts.append(f"- `{imp}`\n")
+                prompt_parts.append("\n")
+            if common_blocks:
+                prompt_parts.append("**Symbols defined across multiple files** (potential candidates for shared module):\n")
+                for sym, files in common_blocks[:6]:
+                    file_list = ', '.join(f.split('/')[-1] for f in files[:4])
+                    extra = f" (+{len(files) - 4} more)" if len(files) > 4 else ""
+                    prompt_parts.append(f"- `{sym}()` / `class {sym}` — {file_list}{extra}\n")
+                prompt_parts.append("\n")
+            if docstring_styles:
+                prompt_parts.append("**Docstring styles**: ")
+                prompt_parts.append(", ".join(f"{style} ({len(files)})" for style, files in docstring_styles.items()))
+                prompt_parts.append("\n")
+            if error_styles:
+                prompt_parts.append("**Error-handling styles**: ")
+                prompt_parts.append(", ".join(f"{style} ({len(files)})" for style, files in error_styles.items()))
+                prompt_parts.append("\n")
+            if logger_users:
+                prompt_parts.append(f"**Logger setup** found in: {', '.join(Path(f).name for f in logger_users)}\n")
+            prompt_parts.append("\n")
+    
     # Include file processing report
     if warnings:
         prompt_parts.append("## File Processing Report\n\n")
         prompt_parts.append("**Issues Encountered:**\n")
         for warning in warnings:
             clean_warning = warning.replace("⚠️ ", "").replace("✅ ", "")
-            prompt_parts.append(f"- {clean_warning}\n")
+            prompt_parts.append(f"- ⚠️ {clean_warning}\n")
         prompt_parts.append("\n")
     else:
         prompt_parts.append("## File Processing Report\n\n")
-        prompt_parts.append("- All files processed successfully\n\n")
+        prompt_parts.append("- ✅ All files processed successfully\n\n")
 
-    # Add file listing with statistics (in dependency order)
+    # Add file listing with statistics (in dependency order) AND truncation flags
     prompt_parts.append("## Files to Analyze\n\n")
     for i, item in enumerate(ordered_contents, 1):
         filename = item['filename']
@@ -591,12 +866,47 @@ def construct_user_prompt(
         lines = content.count('\n')
         chars = len(content)
         lang = filename.split('.')[-1] if '.' in filename else 'unknown'
-        prompt_parts.append(f"{i}. **{filename}** ({lines} lines, {chars} chars, {lang})\n")
-    prompt_parts.append("\n" + "="*60 + "\n\n")
+
+        # Check if file was truncated (original size check)
+        truncation_note = ""
+        if chars >= 10 * 1024 * 1024:  # 10MB limit
+            truncation_note = " ⚠️ **TRUNCATED**"
+        elif chars < 100 and lines < 5:
+            truncation_note = " ⚠️ **VERY SMALL**"
+
+        prompt_parts.append(f"{i}. **{filename}** ({lines} lines, {chars} chars, {lang}){truncation_note}\n")
+
 
     # Add each file with headers (in dependency order)
     for item in ordered_contents:
-        prompt_parts.append(f"### FILE: {item['filename']}\n\n")
-        prompt_parts.append(f"```\n{item['content']}\n```\n\n")
+        filename = item['filename']
+        content = item['content']
+        displayed = content
+
+        # Apply per-file cap if requested
+        if max_file_chars and len(content) > max_file_chars:
+            half = max_file_chars // 2
+            displayed = (
+                content[:half]
+                + f"\n\n... [{len(content) - max_file_chars} chars omitted for brevity] ...\n\n"
+                + content[-half:]
+            )
+
+        # Apply summary mode: keep head + tail
+        if summary_mode and len(displayed) > 4000:
+            head_chars = 1500
+            tail_chars = 1500
+            displayed = (
+                displayed[:head_chars]
+                + f"\n\n... [{len(displayed) - head_chars - tail_chars} chars omitted in summary mode] ...\n\n"
+                + displayed[-tail_chars:]
+            )
+
+        prompt_parts.append(f"### FILE: {filename}\n\n")
+        prompt_parts.append(f"```\n{displayed}\n```\n\n")
+
+    if summary_mode:
+        prompt_parts.append("\n*Note: Summary mode is active — file bodies are abbreviated. "
+                            "Disable summary mode for a complete review.*\n")
 
     return "".join(prompt_parts)

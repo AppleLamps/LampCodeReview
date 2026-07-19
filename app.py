@@ -12,7 +12,8 @@ from config import (
     SYSTEM_PROMPT, IDE_INSTRUCTIONS_PROMPT
 )
 from review_service import prepare_review
-from reviewer import stream_grok_review
+from reviewer import stream_grok_review, StreamCancellationToken
+from openrouter_client import validate_and_estimate_tokens, estimate_cost
 
 
 def display_about_section():
@@ -182,11 +183,12 @@ def start_review(api_key, uploaded_files, review_mode, selected_model):
     
     # Prepare review: process files, build prompt, and validate
     with st.spinner("Processing uploaded files..."):
-        code_contents, warnings, user_prompt, validation = prepare_review(
+        code_contents, warnings, user_prompt, request_id, validation_tuple = prepare_review(
             uploaded_files=uploaded_files,
             review_mode=review_mode,
             selected_model=selected_model,
         )
+    is_valid, size_message, estimated_tokens = validation_tuple
 
     # Show any warnings from processing
     if warnings:
@@ -208,62 +210,126 @@ def start_review(api_key, uploaded_files, review_mode, selected_model):
     st.session_state.user_prompt = user_prompt
     st.session_state.selected_review_mode = review_mode
     st.session_state.selected_model = selected_model
+    st.session_state.request_id = request_id
 
-    # Validate request size and show token estimate
-    is_valid, size_message, estimated_tokens = validation
-    
-    with st.expander("📊 Request Details", expanded=True):
-        col1, col2, col3 = st.columns(3)
+    # Enhanced Request Preview UI
+    with st.expander("📊 Request Preview & Details", expanded=True):
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Files", len(code_contents))
         with col2:
             st.metric("Est. Tokens", f"~{estimated_tokens:,}")
         with col3:
             st.metric("Model", selected_model.split('/')[-1])
-        
+        with col4:
+            st.metric("Est. Cost", f"${estimate_cost(estimated_tokens, selected_model):.4f}")
+
+        # Token utilization bar
+        max_tokens = 200000
+        utilization = estimated_tokens / max_tokens
+        st.progress(min(utilization, 1.0))
+        st.caption(f"Token utilization: {utilization*100:.1f}% of {max_tokens:,} limit")
+
+        # Validation result
         if not is_valid:
             st.error(f"❌ {size_message}")
             return
-        elif "⚠️" in size_message:
+        elif "⚠️" in size_message or utilization > 0.75:
             st.warning(f"⚠️ {size_message}")
-    
+        else:
+            st.success(f"✅ Request size OK: ~{estimated_tokens:,} tokens")
+
+        # Request ID for diagnostics
+        st.caption(f"🔖 Request ID: `{request_id}`")
+
+        # File details
+        st.markdown("**Files to be analyzed:**")
+        for i, item in enumerate(code_contents, 1):
+            lines = item['content'].count('\n')
+            chars = len(item['content'])
+            ext = item['filename'].split('.')[-1] if '.' in item['filename'] else 'txt'
+            st.write(f"{i}. **{item['filename']}** — {lines:,} lines, {chars:,} chars ({ext})")
+
+        # Processing warnings
+        if warnings:
+            st.markdown("**⚠️ Processing Notes:**")
+            for w in warnings:
+                st.caption(f"• {w}")
+
+        # Action buttons
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🔍 Preview Full Prompt", use_container_width=True):
+                st.session_state.show_prompt_preview = True
+        with col_b:
+            if st.button("📋 Copy Prompt to Clipboard", use_container_width=True):
+                st.code(user_prompt, language="markdown")
+                st.success("Prompt displayed above — copy from the code block")
+
+        # Show full prompt preview if requested
+        if st.session_state.get("show_prompt_preview", False):
+            with st.expander("📄 Full Prompt Preview", expanded=True):
+                st.markdown(f"**System Prompt:** `{review_mode} mode`")
+                st.code(user_prompt, language="markdown")
+                if st.button("Close Preview"):
+                    st.session_state.show_prompt_preview = False
+                    st.rerun()
+
     # Determine if using IDE instructions mode
     use_ide_instructions = review_mode == "IDE Implementation Instructions"
-    
-    # Start streaming review
-    with st.spinner("🤖 The model is analyzing your code..."):
-        progress_bar = st.progress(0)
-        result_container = st.empty()
-        
-        full_response = ""
-        chunk_count = 0
-        
-        for chunk in stream_grok_review(
-            api_key,
-            user_prompt,
-            use_ide_instructions,
+
+    # Start streaming review directly (single click from the top-level button)
+    cancel_token = StreamCancellationToken()
+    st.session_state.active_cancel_token = cancel_token
+
+    progress_bar = st.progress(0)
+    result_container = st.empty()
+    cancel_placeholder = st.empty()
+
+    full_response = ""
+    chunk_count = 0
+    finished = False
+
+    try:
+        iterator = stream_grok_review(
+            api_key, user_prompt, use_ide_instructions,
             model=st.session_state.selected_model,
             file_count=len(code_contents),
             review_mode=review_mode,
-        ):
-            chunk_count += 1
-            full_response += chunk
-            
-            # Update progress (simulate progress based on chunk count)
-            progress = min(chunk_count / 100, 0.95)  # Cap at 95% until complete
-            progress_bar.progress(progress)
-            
-            # Update the display with current response
-            result_container.markdown(full_response)
-        
-        # Complete the progress bar
-        progress_bar.progress(1.0)
-        time.sleep(0.5)
-        progress_bar.empty()
-    
+            cancel_token=cancel_token,
+        )
+        while not finished:
+            try:
+                with cancel_placeholder.container():
+                    cancel_clicked = st.button("⏹️ Cancel", key=f"cancel_{request_id}")
+                if cancel_clicked:
+                    cancel_token.cancel()
+                chunk = next(iterator)
+                chunk_count += 1
+                full_response += chunk
+                progress = min(chunk_count / 100, 0.95)
+                progress_bar.progress(progress)
+                result_container.markdown(full_response)
+            except StopIteration:
+                finished = True
+            except Exception as e:
+                st.error(f"❌ Streaming failed: {e}")
+                finished = True
+                break
+    except Exception as e:
+        st.error(f"❌ Streaming failed: {e}")
+
+    # Complete the progress bar
+    progress_bar.progress(1.0)
+    time.sleep(0.3)
+    progress_bar.empty()
+    cancel_placeholder.empty()
+
     # Store the result
     st.session_state.review_result = full_response
     st.session_state.review_complete = True
+    st.session_state.pop("active_cancel_token", None)
+    st.rerun()
 
 
 def display_results():
@@ -271,13 +337,13 @@ def display_results():
     if st.session_state.review_complete and st.session_state.review_result:
         st.markdown("---")
         st.markdown("## 📊 Analysis Results")
-        
+    
         # Create tabs for different views
         tab1, tab2, tab3 = st.tabs(["📋 Full Review", "📝 Summary", "🔧 Debug Info"])
-        
+    
         with tab1:
             st.markdown(st.session_state.review_result)
-            
+        
             # Download button
             st.download_button(
                 label="📥 Download Full Review",
@@ -285,18 +351,18 @@ def display_results():
                 file_name="code_review.md",
                 mime="text/markdown"
             )
-        
+    
         with tab2:
             # Try to extract summary from the review
             review_text = st.session_state.review_result
-            
+        
             # Look for summary section
             summary_patterns = [
                 r"## Executive Summary[\s\S]*?(?=##|$)",
                 r"## Summary[\s\S]*?(?=##|$)",
                 r"### Summary[\s\S]*?(?=###|##|$)"
             ]
-            
+        
             summary_found = False
             for pattern in summary_patterns:
                 summary_match = re.search(pattern, review_text, re.IGNORECASE)
@@ -304,7 +370,7 @@ def display_results():
                     st.markdown(summary_match.group(0))
                     summary_found = True
                     break
-            
+        
             if not summary_found:
                 # If no summary section found, show first few paragraphs
                 paragraphs = review_text.split('\n\n')[:3]
@@ -314,7 +380,7 @@ def display_results():
                     st.markdown(summary)
                 else:
                     st.info("Could not automatically extract a summary. Please see the 'Full Review' tab.")
-        
+    
         with tab3:
             with st.expander("System Prompt (The AI's Instructions)"):
                 # Read the review mode from session state to select prompt
@@ -357,6 +423,6 @@ if api_key:
     # Analyze Button
     if st.button("🚀 Analyze Code", type="primary", use_container_width=True):
         start_review(api_key, uploaded_files, review_mode, selected_model)
-    
+
     # Display Results
     display_results()

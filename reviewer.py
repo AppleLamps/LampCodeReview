@@ -3,17 +3,14 @@ import json
 import logging
 import uuid
 import os
-from typing import Generator, Tuple, Optional
+import threading
+from typing import Generator, Optional
 from datetime import datetime
 from pathlib import Path
 from config import SYSTEM_PROMPT, IDE_INSTRUCTIONS_PROMPT, REFACTOR_SYSTEM_PROMPT
-from openrouter_client import stream_chat
+from openrouter_client import stream_chat, validate_and_estimate_tokens
 
 logger = logging.getLogger(__name__)
-
-# Token estimation: roughly 0.25 tokens per character for code
-ESTIMATED_TOKENS_PER_CHAR = 0.25
-MAX_REQUEST_TOKENS = 200000  # Increased limit for larger codebases
 
 # Request history tracking
 HISTORY_DIR = Path(".code_review_history")
@@ -35,7 +32,7 @@ def log_request(request_id: str, model: str, estimated_tokens: int, file_count: 
         history_dir = _ensure_history_dir()
         if not history_dir:
             return
-        
+
         log_entry = {
             'request_id': request_id,
             'timestamp': datetime.now().isoformat(),
@@ -43,44 +40,27 @@ def log_request(request_id: str, model: str, estimated_tokens: int, file_count: 
             'estimated_tokens': estimated_tokens,
             'file_count': file_count
         }
-        
+
         log_file = history_dir / f"{request_id}.json"
         with open(log_file, 'w') as f:
             json.dump(log_entry, f, indent=2)
-        
+
         logger.info(f"Request {request_id} logged to history")
     except Exception as e:
         logger.warning(f"Could not log request: {e}")
 
 
-def validate_and_estimate_tokens(user_prompt: str) -> Tuple[bool, str, int]:
-    """
-    Validate request size and estimate token count.
-    
-    Returns: (is_valid, message, estimated_tokens)
-    """
-    if not user_prompt:
-        return False, "Prompt is empty", 0
-    
-    estimated_tokens = int(len(user_prompt) * ESTIMATED_TOKENS_PER_CHAR)
-    
-    if estimated_tokens > MAX_REQUEST_TOKENS:
-        return (
-            False,
-            f"Request too large: ~{estimated_tokens} tokens (limit: {MAX_REQUEST_TOKENS}). "
-            f"Try uploading fewer or smaller files.",
-            estimated_tokens
-        )
-    
-    if estimated_tokens > MAX_REQUEST_TOKENS * 0.75:  # Warn at 75% of limit
-        return (
-            True,
-            f"⚠️ Large request: ~{estimated_tokens} tokens (limit: {MAX_REQUEST_TOKENS}). "
-            f"Response may be truncated.",
-            estimated_tokens
-        )
-    
-    return True, f"✅ Request size OK: ~{estimated_tokens} tokens", estimated_tokens
+class StreamCancellationToken:
+    """Lightweight cancellation token for streaming responses."""
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
 
 
 def stream_grok_review(
@@ -90,37 +70,29 @@ def stream_grok_review(
     model: str = "x-ai/grok-4",
     file_count: int = 0,
     review_mode: str = "Standard Review",
+    cancel_token: Optional[StreamCancellationToken] = None,
 ) -> Generator[str, None, None]:
-    """Stream the Grok review response with request validation and logging."""
+    """Stream the Grok review response with request validation and logging.
+
+    Args:
+        cancel_token: Optional token to allow the caller to cancel the stream
+                      mid-flight. Checked between chunks.
+    """
     # Generate request ID for tracking
     request_id = str(uuid.uuid4())[:8]
-    
+
     # Validate inputs
     if not api_key or not isinstance(api_key, str):
         yield "❌ **Error**: Invalid API key provided."
         return
-    
+
     if not user_prompt or not isinstance(user_prompt, str):
         yield "❌ **Error**: Invalid prompt provided."
         return
-    
-    # Validate request size
-    is_valid, size_message, estimated_tokens = validate_and_estimate_tokens(user_prompt)
-    logger.info(f"Request {request_id} validation: {size_message}")
-    
-    # Log the request
-    log_request(request_id, model, estimated_tokens, file_count)
-    
-    if not is_valid:
-        yield f"❌ **Request Too Large**: {size_message}"
-        return
-    
-    if "⚠️" in size_message:
-        yield f"{size_message}\n\n"
-    
-    # Show request ID for diagnostics
-    yield f"*Request ID: `{request_id}`*\n\n"
-    
+
+    if cancel_token is None:
+        cancel_token = StreamCancellationToken()
+
     if use_ide_instructions or review_mode == "IDE Implementation Instructions":
         system_prompt = IDE_INSTRUCTIONS_PROMPT
     elif review_mode == "Refactor":
@@ -128,14 +100,36 @@ def stream_grok_review(
     else:
         system_prompt = SYSTEM_PROMPT
 
+    # Validate with both prompts for accurate token count
+    validation = validate_and_estimate_tokens(user_prompt, system_prompt)
+
+    # Log the request
+    log_request(request_id, model, validation["estimated_tokens"], file_count)
+
+    if not validation["is_valid"]:
+        yield f"❌ **Request Too Large**: {validation['error']}"
+        return
+
+    if validation.get("warning") and "Large request" in validation["warning"]:
+        yield f"{validation['warning']}\n\n"
+
+    # Show request ID for diagnostics
+    yield f"*Request ID: `{request_id}`*\n\n"
+
     try:
+        chunk_count = 0
         for content in stream_chat(
             api_key=api_key,
             model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            timeout=30,
+            timeout=60,
         ):
+            chunk_count += 1
+            if cancel_token.cancelled:
+                yield "\n\n⏹️ **Stream cancelled by user.**"
+                logger.info(f"Request {request_id} cancelled after {chunk_count} chunks")
+                return
             yield content
     except requests.exceptions.HTTPError as e:
         error_code = e.response.status_code
@@ -143,7 +137,7 @@ def stream_grok_review(
             error_detail = e.response.json().get('error', {}).get('message', '')
         except:
             error_detail = ''
-        
+
         if error_code == 401:
             yield "❌ **Authentication Error**: Invalid API key. Please verify your OpenRouter credentials at https://openrouter.ai/keys"
         elif error_code == 429:
@@ -157,7 +151,7 @@ def stream_grok_review(
             yield f"❌ **HTTP Error {error_code}**: {str(e)}{detail}\n\nPlease check the OpenRouter status page or try a different model."
         logger.error(f"HTTP Error {error_code} from OpenRouter: {e}")
     except requests.exceptions.Timeout as e:
-        yield "⏱️ **Timeout Error**: The request took too long (30 seconds). Please try again with smaller files or check your internet connection."
+        yield "⏱️ **Timeout Error**: The request took too long (60 seconds). Please try again with smaller files or check your internet connection."
         logger.error(f"Request timeout: {e}")
     except requests.exceptions.ConnectionError as e:
         yield "🌐 **Connection Error**: Could not connect to OpenRouter. Please check your internet connection and try again."
