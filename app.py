@@ -13,6 +13,15 @@ from config import (
 from review_service import prepare_review
 from reviewer import stream_grok_review, StreamCancellationToken
 from openrouter_client import validate_and_estimate_tokens, estimate_cost, fetch_available_models
+from browser_storage import browser_api_key
+
+
+def cancel_active_review():
+    """Signal the currently streaming review to stop."""
+    cancel_token = st.session_state.get("active_cancel_token")
+    if cancel_token is not None:
+        cancel_token.cancel()
+    st.session_state.review_cancel_requested = True
 
 
 def display_about_section():
@@ -37,26 +46,45 @@ The AI then provides a prioritized list of findings, complete with actionable re
 def handle_api_key():
     """Handle API key entry and validation.
 
-    Users must enter their own OpenRouter API key. The key is stored
-    in ``st.session_state`` so it survives reruns but is never written
-    to disk and is lost when the browser session ends.
+    Users must enter their own OpenRouter API key. It can be kept for the
+    current session or persisted in this browser's local storage. The key is
+    never written to the Streamlit server's filesystem.
     """
     if "api_key_source" not in st.session_state:
         st.session_state.api_key_source = None
 
-    api_key = None
-    api_key_source = None
+    pending_action = st.session_state.pop("browser_key_action", None)
+    if pending_action:
+        stored_api_key = browser_api_key(
+            action=pending_action["action"],
+            value=pending_action.get("value", ""),
+        )
+    else:
+        stored_api_key = browser_api_key()
 
-    if st.session_state.get("manual_api_key"):
-        # Reuse a key previously entered this session
-        api_key = st.session_state.manual_api_key
-        api_key_source = "manual input"
+    # Clearing localStorage is asynchronous. Ignore the component's previous
+    # value until its frontend confirms that storage is empty.
+    if pending_action and pending_action["action"] == "clear":
+        st.session_state.ignore_stored_api_key = True
+    if st.session_state.get("ignore_stored_api_key"):
+        if not stored_api_key:
+            st.session_state.pop("ignore_stored_api_key", None)
+        stored_api_key = ""
+
+    session_api_key = st.session_state.get("manual_api_key")
+    api_key = session_api_key or stored_api_key or None
+    if session_api_key:
+        api_key_source = "this session"
+    elif stored_api_key:
+        api_key_source = "saved in this browser"
+    else:
+        api_key_source = None
 
     if not api_key:
         with st.expander("🔑 OpenRouter API Key Required", expanded=True):
             st.info("""
-        To use this tool, you need an OpenRouter API key. Your key is used only
-        for this session and is never stored on disk.
+        To use this tool, you need an OpenRouter API key. Your key is never
+        stored on the app server. You can optionally save it in this browser.
 
         Get your API key from: https://openrouter.ai/keys
         """)
@@ -64,25 +92,41 @@ def handle_api_key():
                 "Enter your OpenRouter API Key:",
                 type="password",
                 key="api_key_input",
-                help="Your key is used only for this session and is never stored on disk.",
+                help="Your key is sent only to OpenRouter and is never stored on the app server.",
             )
-            col1, col2 = st.columns([1, 3])
+            remember_key = st.checkbox(
+                "Remember this key in this browser",
+                value=True,
+                help="Stores the key in this browser's local storage. Disable this on a shared computer.",
+            )
+            col1, _ = st.columns([1, 3])
             with col1:
                 if st.button("Save Key", key="save_api_key"):
                     if api_key:
                         st.session_state.manual_api_key = api_key
-                        st.session_state.api_key_source = "manual input"
+                        st.session_state.api_key_source = "this session"
+                        if remember_key:
+                            st.session_state.browser_key_action = {
+                                "action": "save",
+                                "value": api_key,
+                            }
                         st.rerun()
-            with col2:
-                if st.session_state.get("manual_api_key"):
-                    if st.button("Clear Saved Key", key="clear_api_key"):
-                        st.session_state.pop("manual_api_key", None)
-                        st.session_state.api_key_source = None
-                        st.rerun()
-            if st.session_state.get("manual_api_key"):
-                st.caption("✅ Key saved for this session. You can now use the tool below.")
-                api_key = st.session_state.manual_api_key
-                api_key_source = "manual input"
+            st.caption("Browser-saved keys remain available after closing the tab or restarting the app.")
+    else:
+        with st.expander("🔑 OpenRouter API Key", expanded=False):
+            if api_key_source == "saved in this browser":
+                st.caption("The key is saved in this browser.")
+            else:
+                st.caption("The key is available for this session.")
+            if st.button("Clear Saved Key", key="clear_api_key"):
+                st.session_state.pop("manual_api_key", None)
+                st.session_state.pop("validated_api_key", None)
+                st.session_state.pop("available_models_key", None)
+                st.session_state.pop("available_models", None)
+                st.session_state.api_key_source = None
+                st.session_state.ignore_stored_api_key = True
+                st.session_state.browser_key_action = {"action": "clear"}
+                st.rerun()
 
     if api_key:
         # Validate API key format and length
@@ -316,14 +360,25 @@ def start_review(api_key, uploaded_files, review_mode, selected_model):
     # Start streaming review directly (single click from the top-level button)
     cancel_token = StreamCancellationToken()
     st.session_state.active_cancel_token = cancel_token
+    st.session_state.review_cancel_requested = False
 
     progress_bar = st.progress(0)
     result_container = st.empty()
     cancel_placeholder = st.empty()
 
+    # Widgets must only be created once per Streamlit script run. Creating this
+    # button inside the chunk loop reuses the same key and aborts the stream on
+    # its second iteration with StreamlitDuplicateElementKey.
+    with cancel_placeholder.container():
+        st.button(
+            "⏹️ Cancel",
+            key=f"cancel_{request_id}",
+            on_click=cancel_active_review,
+        )
+
     full_response = ""
     chunk_count = 0
-    finished = False
+    streaming_error = None
 
     try:
         iterator = stream_grok_review(
@@ -333,37 +388,42 @@ def start_review(api_key, uploaded_files, review_mode, selected_model):
             review_mode=review_mode,
             cancel_token=cancel_token,
         )
-        while not finished:
-            try:
-                with cancel_placeholder.container():
-                    cancel_clicked = st.button("⏹️ Cancel", key=f"cancel_{request_id}")
-                if cancel_clicked:
-                    cancel_token.cancel()
-                chunk = next(iterator)
-                chunk_count += 1
-                full_response += chunk
-                progress = min(chunk_count / 100, 0.95)
-                progress_bar.progress(progress)
-                result_container.markdown(full_response)
-            except StopIteration:
-                finished = True
-            except Exception as e:
-                st.error(f"❌ Streaming failed: {e}")
-                finished = True
-                break
+        for chunk in iterator:
+            chunk_count += 1
+            full_response += chunk
+            progress = min(chunk_count / 100, 0.95)
+            progress_bar.progress(progress)
+            result_container.markdown(full_response)
     except Exception as e:
-        st.error(f"❌ Streaming failed: {e}")
+        streaming_error = e
 
-    # Complete the progress bar
-    progress_bar.progress(1.0)
-    time.sleep(0.3)
+    if streaming_error is None:
+        progress_bar.progress(1.0)
+        time.sleep(0.3)
     progress_bar.empty()
     cancel_placeholder.empty()
+    st.session_state.pop("active_cancel_token", None)
+
+    if cancel_token.cancelled:
+        st.session_state.review_complete = False
+        st.session_state.review_result = ""
+        st.session_state.review_cancel_requested = False
+        st.warning("⏹️ Review cancelled.")
+        return
+
+    if streaming_error is not None:
+        st.session_state.review_complete = False
+        st.error(f"❌ Streaming failed: {streaming_error}")
+        return
+
+    if not full_response.strip():
+        st.session_state.review_complete = False
+        st.error("❌ OpenRouter completed the request without returning any content. Please try another model.")
+        return
 
     # Store the result
     st.session_state.review_result = full_response
     st.session_state.review_complete = True
-    st.session_state.pop("active_cancel_token", None)
     st.rerun()
 
 
@@ -454,6 +514,10 @@ if api_key:
     
     # Initialize session state
     initialize_session_state()
+
+    if st.session_state.pop("review_cancel_requested", False):
+        st.session_state.pop("active_cancel_token", None)
+        st.warning("⏹️ Review cancelled.")
     
     # Analyze Button
     if st.button("🚀 Analyze Code", type="primary", use_container_width=True):

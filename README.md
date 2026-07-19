@@ -24,8 +24,7 @@ The AI uses a structured, multi-step thinking process (defined in the prompt) to
 - **Structured Thinking Process:** Guides the AI through steps like Initial Assessment, Deep Analysis, Issue Prioritization, and Recommendation Formulation.
 - **Multi-File Upload:** Analyze multiple related code files simultaneously for context-aware reviews.
 - **Wide Language Support:** Accepts common file extensions (`.py`, `.js`, `.java`, `.ts`, `.go`, `.rb`, `.php`, `.cs`, `.c`, `.cpp`, `.html`, `.css`, `.sql`, etc.).
-- **API Key Management:** Securely uses your OpenRouter API key (reads from `.env` file or prompts for input).
-- **Dependency Auto-Installation:** Automatically installs missing required libraries (`streamlit`, `requests`, `python-dotenv`) on first run.
+- **API Key Management:** Accepts your OpenRouter API key in the UI and can remember it in browser-local storage without persisting it on the app server.
 - **File Size Handling:** Implements limits (50MB total, 50MB per file) and truncates oversized files with a notification.
 - **User-Friendly Interface:** Built with Streamlit for an interactive web experience.
 - **Progress Indicators:** Shows spinners and a progress bar during analysis.
@@ -66,32 +65,20 @@ The AI uses a structured, multi-step thinking process (defined in the prompt) to
     If you only have the `app.py` file, navigate to the directory containing the file.
 
 2. **Install Dependencies:**
-    The script attempts to auto-install dependencies. However, it's good practice to install them manually, especially in virtual environments:
+    Install the required packages from the repository:
 
     ```bash
-    pip install streamlit requests python-dotenv
+    pip install -r requirements.txt
     ```
 
     - `streamlit`: For creating the web application interface.
     - `requests`: For making API calls to OpenRouter.
-    - `python-dotenv`: For loading the API key from a `.env` file.
 
 ## Configuration
 
-The application requires your OpenRouter API key. You have two options:
+The application prompts for your OpenRouter API key in the web interface. Enable **Remember this key in this browser** to keep it in that browser's local storage across tabs, browser restarts, and app restarts. Disable this option on a shared computer.
 
-1. **`.env` File (Recommended):**
-    - Create a file named `.env` in the same directory as the script (`app.py`).
-    - Add your API key to the file like this:
-
-        ```env
-        OPENROUTER_API_KEY=sk-or-v1-abc...xyz
-        ```
-
-    - The application will automatically load the key from this file. **Ensure `.env` is added to your `.gitignore` file if using version control.**
-
-2. **Manual Input:**
-    - If no `.env` file is found or the key isn't defined there, the application will prompt you to enter the API key directly in the web interface when you run it. This key is used only for the current session and is not stored persistently by the application.
+The key is not written to the Streamlit server's filesystem or repository. Use **Clear Saved Key** in the API-key section to remove both the browser-local copy and the current session copy.
 
 ## Usage
 
@@ -104,7 +91,7 @@ The application requires your OpenRouter API key. You have two options:
 
     This will start the web server and open the application in your default web browser.
 
-2. **Enter API Key:** If you haven't configured a `.env` file, paste your OpenRouter API key into the input field.
+2. **Enter API Key:** Paste your OpenRouter API key into the input field and choose whether to remember it in this browser.
 
 3. **Upload Code Files:** Click the "Browse files" button or drag and drop your code files onto the uploader. Select one or more files you want reviewed.
 

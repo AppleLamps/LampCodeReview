@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser storage</title>
+  </head>
+  <body>
+    <script>
+      const COMPONENT_READY = "streamlit:componentReady";
+      const SET_COMPONENT_VALUE = "streamlit:setComponentValue";
+      const SET_FRAME_HEIGHT = "streamlit:setFrameHeight";
+      const RENDER = "streamlit:render";
+
+      function send(type, payload = {}) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type, ...payload },
+          "*"
+        );
+      }
+
+      window.addEventListener("message", (event) => {
+        if (
+          event.source !== window.parent ||
+          !event.data ||
+          event.data.type !== RENDER
+        ) return;
+
+        const args = event.data.args || {};
+        const storageKey = args.storage_key;
+        if (typeof storageKey !== "string" || !storageKey) return;
+        let storedValue = "";
+
+        try {
+          if (args.action === "save" && typeof args.value === "string") {
+            localStorage.setItem(storageKey, args.value);
+          } else if (args.action === "clear") {
+            localStorage.removeItem(storageKey);
+          }
+          storedValue = localStorage.getItem(storageKey) || "";
+        } catch (_error) {
+          // Privacy settings can disable localStorage. Returning an empty value
+          // leaves the app's session-only behavior intact.
+          storedValue = "";
+        }
+
+        send(SET_COMPONENT_VALUE, { value: storedValue });
+        send(SET_FRAME_HEIGHT, { height: 0 });
+      });
+
+      send(COMPONENT_READY, { apiVersion: 1 });
+      send(SET_FRAME_HEIGHT, { height: 0 });
+    </script>
+  </body>
+</html>

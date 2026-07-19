@@ -110,12 +110,6 @@ def stream_grok_review(
         yield f"❌ **Request Too Large**: {validation['error']}"
         return
 
-    if validation.get("warning") and "Large request" in validation["warning"]:
-        yield f"{validation['warning']}\n\n"
-
-    # Show request ID for diagnostics
-    yield f"*Request ID: `{request_id}`*\n\n"
-
     try:
         chunk_count = 0
         for content in stream_chat(
@@ -130,6 +124,13 @@ def stream_grok_review(
                 yield "\n\n⏹️ **Stream cancelled by user.**"
                 logger.info(f"Request {request_id} cancelled after {chunk_count} chunks")
                 return
+            if chunk_count == 1:
+                if validation.get("warning") and "Large request" in validation["warning"]:
+                    yield f"{validation['warning']}\n\n"
+                # Do not emit metadata until OpenRouter has produced content.
+                # This lets the UI distinguish an empty provider response from
+                # a successful review containing only locally generated text.
+                yield f"*Request ID: `{request_id}`*\n\n"
             yield content
     except requests.exceptions.HTTPError as e:
         error_code = e.response.status_code
